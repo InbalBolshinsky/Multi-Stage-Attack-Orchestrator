@@ -1,20 +1,43 @@
 # Protocol
 
-A small line-based text protocol over TCP between the Python orchestrator
-(client) and the C device simulator (server). Text was chosen over a binary
-format because it's trivial to log, debug with `nc`/`telnet`, and read in a
-packet capture — none of which was worth trading away for the small
-efficiency gain of a binary encoding at this scale.
+A small length-prefixed text-payload protocol over TCP between the Python
+orchestrator (client) and the C device simulator (server).
 
-One client is served at a time: the simulator accepts a connection, serves
-it to completion (or until it drops/QUITs), then accepts the next. This
-matches how the orchestrator actually uses it — one attack attempt, one
-connection.
+## Framing
 
-Every line is terminated with `\n`. The server strips trailing `\r` if
-present, so it's tolerant of either line ending.
+Every message, either direction, is one frame:
 
-## Commands (client → server)
+```
+[4 bytes: payload length, big-endian unsigned int] [N bytes: payload]
+```
+
+Big-endian because that's "network byte order" -- the standard every real
+protocol uses, and it removes any ambiguity between C and Python defaulting
+to different native byte order. C uses `htonl()`/`ntohl()`; Python uses
+`int.to_bytes(4, "big")`/`int.from_bytes(data, "big")`.
+
+The receiver always knows exactly how many payload bytes follow, so framing
+never depends on scanning for a delimiter character. This matters because
+payload content -- in particular the raw file bytes in a `READ` reply --
+can contain any byte value, including `\n`, without corrupting the framing.
+(An earlier version of this protocol was line-based, terminating each
+message with `\n`; that made a `\n` byte inside file content ambiguous with
+the end of the message. Switching to explicit length-prefixing was a
+deliberate fix for that hole, not just a stylistic change.)
+
+The payload itself is still plain text for every command and most
+responses -- only the framing changed, not the command vocabulary. `READ`'s
+reply is the one place a payload has structure: a text header, one
+embedded `\n`, then the raw file bytes making up the rest of the frame (see
+below). The receiver splits on the *first* `\n` only and takes everything
+after it by length, not by looking for a second delimiter, so an embedded
+`\n` inside the file content itself is not a problem.
+
+Zero-length frames are not a valid message (no command or reply is ever
+empty) and are treated as a protocol error, same as an oversized declared
+length or a connection that dies mid-frame.
+
+## Commands (client → server payload)
 
 | Command | Purpose |
 |---|---|
@@ -25,20 +48,15 @@ present, so it's tolerant of either line ending.
 | `LIST` | Enumerate extractable file paths (only valid once unlocked) |
 | `QUIT` | Close the session cleanly |
 
-## Responses (server → client)
+## Responses (server → client payload)
 
 ```
 OK HELLO model=<model> ios=<version> battery=<0-100> locked=<0|1>
 OK STAGE <id> SUCCESS
 OK STAGE <id> FAIL
 OK UNLOCK locked=0
-OK READ <path> <byte-length>
-<raw file content, one line>
-OK LIST <n>
-<path 1>
-<path 2>
-...
-<path n>
+OK READ <path> <byte-length>\n<raw file content>
+OK LIST <n>\n<path 1>\n<path 2>\n...\n<path n>
 OK BYE
 ERR LOCKED
 ERR NOTFOUND <path>
@@ -46,19 +64,25 @@ ERR UNKNOWN <command>
 ```
 
 Notes:
-- `READ`'s response is two lines: a header line with the byte length,
-  followed by the raw content itself on the next line. Content in this
-  simulator is placeholder text, not real binary blobs, so a newline-safe
-  raw write is sufficient; a production version would need a
-  length-prefixed binary frame instead of relying on a trailing newline for
-  arbitrary binary content.
-- A dropped connection is *silent* — no `ERR` line, the socket just closes.
-  This deliberately mirrors a real device failure (crash, cable pull,
-  bootloader hang) rather than a clean protocol-level error, since the
-  orchestrator has to be able to tell the difference between "the device
-  told me no" (`ERR`/`FAIL`) and "the device just vanished" (closed
-  socket) — see the README section on failure handling for why that
-  distinction drives different retry behavior.
+- `READ`'s reply is a single frame: a header line (`OK READ <path>
+  <byte-length>`), one `\n`, then the raw content -- not a separate frame.
+  The frame's own length prefix already tells the receiver exactly how
+  much content follows, so `<byte-length>` in the header is redundant
+  information kept for readability/logging, not something the receiver
+  needs to parse the frame correctly.
+- `LIST`'s reply is likewise a single frame with paths joined by `\n`
+  (no trailing `\n` -- the frame length marks the end).
+- A dropped connection is *silent* -- no `ERR` reply, the socket just
+  closes (a clean close at a frame boundary, i.e. before any bytes of the
+  next frame's length prefix arrive). This deliberately mirrors a real
+  device failure (crash, cable pull, bootloader hang) rather than a clean
+  protocol-level error, since the orchestrator has to be able to tell the
+  difference between "the device told me no" (`ERR`/`FAIL`) and "the
+  device just vanished" (closed socket) -- see the README section on
+  failure handling for why that distinction drives different retry
+  behavior. A close that happens *mid-frame* (after the length prefix but
+  before all its payload bytes arrive) is likewise treated as a dropped
+  connection, not a malformed message -- both sides just stop.
 
 ## Simulator configuration (not part of the wire protocol)
 

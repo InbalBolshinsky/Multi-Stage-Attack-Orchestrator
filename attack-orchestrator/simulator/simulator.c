@@ -1,12 +1,17 @@
 /*
  * Device simulator.
  *
- * Speaks a small line-based text protocol over TCP (see PROTOCOL.md) and
- * stands in for a real mobile device: it exposes device info, "runs" attack
- * stages with configurable success/failure, and once "unlocked" serves reads
- * from a tiny in-memory filesystem. It can also simulate a connection that
- * drops mid-chain, which is the main failure mode the orchestrator has to
- * handle gracefully.
+ * Speaks a small length-prefixed text-payload protocol over TCP (see
+ * PROTOCOL.md) and stands in for a real mobile device: it exposes device
+ * info, "runs" attack stages with configurable success/failure, and once
+ * "unlocked" serves reads from a tiny in-memory filesystem. It can also
+ * simulate a connection that drops mid-chain, which is the main failure
+ * mode the orchestrator has to handle gracefully.
+ *
+ * Every message (either direction) is [4-byte big-endian length][payload].
+ * The length prefix means framing never depends on scanning for a
+ * delimiter byte, so payload content -- including READ's file bytes -- can
+ * safely contain '\n' or anything else.
  *
  * One client is served at a time (accept -> handle to completion -> accept
  * next). That's enough for an orchestrator that runs one attack at a time,
@@ -17,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <unistd.h>
 #include <errno.h>
 #include <ctype.h>
@@ -27,6 +33,10 @@
 #define MAX_LINE 4096
 #define MAX_FAIL_STAGES 64
 #define MAX_FILES 32
+/* Sanity bound on an incoming frame's declared length -- this is a wire
+ * boundary (untrusted input), so we bound it rather than trusting a
+ * 4-byte length prefix to malloc() whatever it claims. */
+#define MAX_FRAME (1 << 20)
 
 typedef struct {
     const char *path;
@@ -70,42 +80,87 @@ static const char *find_file(const char *path) {
     return NULL;
 }
 
-static void send_line(int fd, const char *fmt, ...) {
-    char buf[MAX_LINE];
-    va_list ap;
-    va_start(ap, fmt);
-    int n = vsnprintf(buf, sizeof(buf) - 2, fmt, ap);
-    va_end(ap);
-    if (n < 0) return;
-    buf[n++] = '\n';
-    buf[n] = '\0';
-    /* best-effort write; a broken pipe here just means the client dropped */
-    write(fd, buf, n);
-}
-
-/* Reads a single '\n'-terminated line. Returns line length, 0 on clean EOF,
- * -1 on error/oversized line. */
-static int read_line(int fd, char *out, size_t out_size) {
-    size_t len = 0;
-    while (len + 1 < out_size) {
-        char c;
-        ssize_t r = read(fd, &c, 1);
-        if (r == 0) return (len == 0) ? 0 : (int)len; /* EOF */
+/* Reads exactly n bytes into buf, looping over short reads (a single
+ * recv() is never guaranteed to fill the buffer). Returns n on success, 0
+ * on clean EOF before any byte of this call was read (a clean close
+ * between frames), -1 on error or an EOF mid-read (a partial frame --
+ * treated the same as a dropped connection either way). */
+static ssize_t read_exact(int fd, void *buf, size_t n) {
+    size_t got = 0;
+    while (got < n) {
+        ssize_t r = read(fd, (char *)buf + got, n - got);
+        if (r == 0) return (got == 0) ? 0 : -1;
         if (r < 0) {
             if (errno == EINTR) continue;
             return -1;
         }
-        if (c == '\n') {
-            out[len] = '\0';
-            return (int)len;
-        }
-        if (c != '\r') out[len++] = c;
+        got += (size_t)r;
     }
-    return -1; /* line too long */
+    return (ssize_t)got;
+}
+
+/* Writes exactly n bytes, looping over short writes. Best-effort: a
+ * broken pipe here just means the client dropped. */
+static int write_exact(int fd, const void *buf, size_t n) {
+    size_t sent = 0;
+    while (sent < n) {
+        ssize_t w = write(fd, (const char *)buf + sent, n - sent);
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        sent += (size_t)w;
+    }
+    return 0;
+}
+
+/* Sends one length-prefixed frame: 4-byte big-endian length, then payload. */
+static int send_frame(int fd, const void *payload, size_t len) {
+    uint32_t len_be = htonl((uint32_t)len);
+    if (write_exact(fd, &len_be, sizeof(len_be)) < 0) return -1;
+    if (len > 0 && write_exact(fd, payload, len) < 0) return -1;
+    return 0;
+}
+
+/* Formats a text payload and sends it as one frame. No trailing '\n' --
+ * that was only needed for the old line-delimited framing. */
+static void send_textf(int fd, const char *fmt, ...) {
+    char buf[MAX_LINE];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    if (n < 0) return;
+    if ((size_t)n >= sizeof(buf)) n = (int)sizeof(buf) - 1; /* truncate defensively */
+    send_frame(fd, buf, (size_t)n);
+}
+
+/* Reads one length-prefixed frame into a heap buffer the caller must
+ * free(). *out_payload is NUL-terminated for convenience parsing text
+ * commands, in addition to the returned exact length. Returns positive
+ * payload length on success, 0 for a clean close at a frame boundary
+ * (equivalent to the old EOF-with-nothing-read case), -1 on error, an
+ * oversized declared length, a partial frame, or a zero-length frame (no
+ * real command is ever empty, so treat it the same as a malformed one --
+ * this also means *out_payload is only ever set on the >0 return path,
+ * so the caller always has exactly one buffer to free). */
+static ssize_t read_frame(int fd, char **out_payload) {
+    uint32_t len_be;
+    ssize_t r = read_exact(fd, &len_be, sizeof(len_be));
+    if (r <= 0) return r;
+    uint32_t len = ntohl(len_be);
+    if (len == 0 || len > MAX_FRAME) return -1;
+    char *buf = malloc((size_t)len + 1);
+    if (!buf) return -1;
+    r = read_exact(fd, buf, len);
+    if (r <= 0) { free(buf); return -1; } /* any EOF here is mid-frame */
+    buf[len] = '\0';
+    *out_payload = buf;
+    return (ssize_t)len;
 }
 
 static void handle_hello(int fd) {
-    send_line(fd, "OK HELLO model=%s ios=%s battery=%d locked=%d",
+    send_textf(fd, "OK HELLO model=%s ios=%s battery=%d locked=%d",
                g_cfg.model, g_cfg.ios_version, g_cfg.battery, g_cfg.locked);
 }
 
@@ -114,55 +169,76 @@ static void handle_stage(int fd, int stage_id) {
      * (handle_connection) before we get here, since dropping means we must
      * not send any response at all. */
     if (should_fail_stage(stage_id)) {
-        send_line(fd, "OK STAGE %d FAIL", stage_id);
+        send_textf(fd, "OK STAGE %d FAIL", stage_id);
         return;
     }
-    send_line(fd, "OK STAGE %d SUCCESS", stage_id);
+    send_textf(fd, "OK STAGE %d SUCCESS", stage_id);
 }
 
 static void handle_unlock(int fd) {
     g_cfg.locked = 0;
-    send_line(fd, "OK UNLOCK locked=%d", g_cfg.locked);
+    send_textf(fd, "OK UNLOCK locked=%d", g_cfg.locked);
 }
 
 static void handle_read(int fd, const char *path) {
     if (g_cfg.locked) {
-        send_line(fd, "ERR LOCKED");
+        send_textf(fd, "ERR LOCKED");
         return;
     }
     const char *content = find_file(path);
     if (!content) {
-        send_line(fd, "ERR NOTFOUND %s", path);
+        send_textf(fd, "ERR NOTFOUND %s", path);
         return;
     }
-    send_line(fd, "OK READ %s %zu", path, strlen(content));
-    /* raw payload, not newline-delimited, so binary-ish content is safe */
-    write(fd, content, strlen(content));
-    write(fd, "\n", 1);
+    /* Single frame: a text header, one embedded '\n', then the raw file
+     * bytes. The receiver splits on the FIRST '\n' only and takes
+     * everything else in the frame as content by length -- not by
+     * scanning for a second delimiter -- so this is safe even if content
+     * itself contains '\n' bytes. */
+    size_t content_len = strlen(content);
+    char header[MAX_LINE];
+    int hn = snprintf(header, sizeof(header), "OK READ %s %zu\n", path, content_len);
+    if (hn < 0 || (size_t)hn >= sizeof(header)) return;
+    size_t total = (size_t)hn + content_len;
+    char *frame = malloc(total);
+    if (!frame) return;
+    memcpy(frame, header, (size_t)hn);
+    memcpy(frame + hn, content, content_len);
+    send_frame(fd, frame, total);
+    free(frame);
 }
 
 static void handle_list(int fd) {
     if (g_cfg.locked) {
-        send_line(fd, "ERR LOCKED");
+        send_textf(fd, "ERR LOCKED");
         return;
     }
-    send_line(fd, "OK LIST %d", g_file_count);
-    for (int i = 0; i < g_file_count; i++) {
-        send_line(fd, "%s", g_files[i].path);
+    /* "OK LIST <n>\npath1\npath2\n...\npathn", one frame, no trailing '\n'
+     * (the frame length itself marks the end -- no delimiter needed). */
+    char buf[MAX_LINE];
+    int len = snprintf(buf, sizeof(buf), "OK LIST %d", g_file_count);
+    if (len < 0) return;
+    for (int i = 0; i < g_file_count && (size_t)len < sizeof(buf); i++) {
+        int n = snprintf(buf + len, sizeof(buf) - (size_t)len, "\n%s", g_files[i].path);
+        if (n < 0) return;
+        len += n;
     }
+    if ((size_t)len >= sizeof(buf)) len = (int)sizeof(buf) - 1; /* truncate defensively */
+    send_frame(fd, buf, (size_t)len);
 }
 
 static void handle_connection(int fd) {
-    char line[MAX_LINE];
-    int n;
     /* per-connection state is derived from g_cfg but locked resets per run
      * so each attack attempt starts from a clean device state */
     g_cfg.locked = 1;
 
-    while ((n = read_line(fd, line, sizeof(line))) > 0) {
+    char *payload;
+    ssize_t plen;
+    while ((plen = read_frame(fd, &payload)) > 0) {
         char cmd[32] = {0};
         char arg[MAX_LINE] = {0};
-        sscanf(line, "%31s %4000[^\n]", cmd, arg);
+        sscanf(payload, "%31s %4000[^\n]", cmd, arg);
+        free(payload);
 
         if (strcmp(cmd, "HELLO") == 0) {
             handle_hello(fd);
@@ -181,10 +257,10 @@ static void handle_connection(int fd) {
         } else if (strcmp(cmd, "LIST") == 0) {
             handle_list(fd);
         } else if (strcmp(cmd, "QUIT") == 0) {
-            send_line(fd, "OK BYE");
+            send_textf(fd, "OK BYE");
             break;
         } else {
-            send_line(fd, "ERR UNKNOWN %s", cmd);
+            send_textf(fd, "ERR UNKNOWN %s", cmd);
         }
     }
     close(fd);

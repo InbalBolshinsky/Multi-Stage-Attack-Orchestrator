@@ -207,8 +207,10 @@ sanity check that `READ` is refused before any attack unlocks the device.
   the current model uses statically declared per-stage estimates, which is
   appropriate for the scope here but is the natural next step for a
   production version.
-- A real binary/length-prefixed frame for `READ`'s payload — the current
-  protocol writes raw content followed by a newline, which is sufficient
-  for this simulator's placeholder text content but would need revisiting
-  for arbitrary binary file content that might itself contain a newline
-  byte.
+- A binary encoding for command/response *payloads* — framing is now
+  length-prefixed (see `PROTOCOL.md`), which is what actually made
+  arbitrary binary content in `READ` safe, but each payload's contents are
+  still a plain text string (`"STAGE 2"`, `"OK HELLO ..."`, etc.) rather
+  than a structured binary format. That keeps the protocol inspectable in
+  a log/packet-capture without inventing a binary encoding for every
+  command's arguments — a deliberate scope line, not an oversight.

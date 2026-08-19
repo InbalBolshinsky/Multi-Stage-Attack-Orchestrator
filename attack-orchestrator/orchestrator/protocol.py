@@ -12,7 +12,8 @@ that led here.
 Deliberately a *high-level* interface (hello / run_stage / read_file), not a
 thin wrapper around raw socket bytes. Stages should reason in terms of
 device operations, not wire format -- the wire format is TCPProtocol's
-private concern (see PROTOCOL.md for the actual line protocol it speaks).
+private concern (see PROTOCOL.md for the actual length-prefixed framing it
+speaks).
 """
 
 from __future__ import annotations
@@ -135,10 +136,17 @@ class FakeProtocol(Protocol):
 
 
 # ---------------------------------------------------------------------------
-# TCPProtocol -- Part 2 implementation. Speaks the line protocol documented
-# in PROTOCOL.md to the C simulator (or, unmodified, to a real device that
-# spoke the same protocol).
+# TCPProtocol -- Part 2 implementation. Speaks the length-prefixed protocol
+# documented in PROTOCOL.md to the C simulator (or, unmodified, to a real
+# device that spoke the same protocol).
+#
+# Every message either direction is one frame: a 4-byte big-endian length,
+# then exactly that many payload bytes. Framing never depends on scanning
+# for a delimiter, so payload content -- including READ's file bytes --
+# can safely contain '\n' or anything else.
 # ---------------------------------------------------------------------------
+
+MAX_FRAME_BYTES = 1 << 20  # sanity bound on a declared frame length; matches simulator.c
 
 
 class TCPProtocol(Protocol):
@@ -156,7 +164,7 @@ class TCPProtocol(Protocol):
     def close(self) -> None:
         if self._sock is not None:
             try:
-                self._send_line("QUIT")
+                self._send_frame(b"QUIT")
             except Exception:
                 pass  # best-effort; we're closing regardless
             self._sock.close()
@@ -164,18 +172,18 @@ class TCPProtocol(Protocol):
 
     # -- wire helpers --------------------------------------------------
 
-    def _send_line(self, line: str) -> None:
+    def _send_frame(self, payload: bytes) -> None:
         if self._sock is None:
             raise ProtocolError("not connected")
         try:
-            self._sock.sendall((line + "\n").encode("utf-8"))
+            self._sock.sendall(len(payload).to_bytes(4, "big") + payload)
         except OSError as exc:
             raise ConnectionDropped(str(exc)) from exc
 
-    def _read_line(self) -> str:
+    def _read_exact(self, n: int) -> bytes:
         if self._sock is None:
             raise ProtocolError("not connected")
-        while b"\n" not in self._buf:
+        while len(self._buf) < n:
             try:
                 chunk = self._sock.recv(4096)
             except OSError as exc:
@@ -183,14 +191,20 @@ class TCPProtocol(Protocol):
             if not chunk:
                 raise ConnectionDropped("connection closed by peer")
             self._buf += chunk
-        line, self._buf = self._buf.split(b"\n", 1)
-        return line.decode("utf-8").rstrip("\r")
+        data, self._buf = self._buf[:n], self._buf[n:]
+        return data
+
+    def _read_frame(self) -> bytes:
+        length = int.from_bytes(self._read_exact(4), "big")
+        if length > MAX_FRAME_BYTES:
+            raise ProtocolError(f"frame too large: {length} bytes")
+        return self._read_exact(length)
 
     # -- protocol operations ---------------------------------------------
 
     def hello(self) -> DeviceState:
-        self._send_line("HELLO")
-        reply = self._read_line()
+        self._send_frame(b"HELLO")
+        reply = self._read_frame().decode("utf-8")
         fields = _parse_kv_reply(reply, expect_prefix="OK HELLO")
         return DeviceState.from_wire(
             model=fields["model"],
@@ -200,42 +214,49 @@ class TCPProtocol(Protocol):
         )
 
     def run_stage(self, stage_id: int) -> bool:
-        self._send_line(f"STAGE {stage_id}")
-        reply = self._read_line()  # raises ConnectionDropped if the sim closed on us
+        self._send_frame(f"STAGE {stage_id}".encode("utf-8"))
+        reply = self._read_frame().decode("utf-8")  # raises ConnectionDropped if the sim closed on us
         parts = reply.split()
         if len(parts) >= 4 and parts[0] == "OK" and parts[1] == "STAGE":
             return parts[3] == "SUCCESS"
         raise ProtocolError(f"unexpected reply to STAGE {stage_id}: {reply!r}")
 
     def unlock(self) -> None:
-        self._send_line("UNLOCK")
-        reply = self._read_line()
+        self._send_frame(b"UNLOCK")
+        reply = self._read_frame().decode("utf-8")
         if not reply.startswith("OK UNLOCK"):
             raise ProtocolError(f"unexpected reply to UNLOCK: {reply!r}")
 
     def read_file(self, path: str) -> bytes:
-        self._send_line(f"READ {path}")
-        reply = self._read_line()
-        if reply.startswith("ERR LOCKED"):
+        self._send_frame(f"READ {path}".encode("utf-8"))
+        payload = self._read_frame()
+        if payload.startswith(b"ERR LOCKED"):
             raise DeviceLockedError(path)
-        if reply.startswith("ERR NOTFOUND"):
+        if payload.startswith(b"ERR NOTFOUND"):
             raise FileNotFoundOnDevice(path)
-        parts = reply.split()
+        # Header text, one embedded '\n', then raw content -- split on the
+        # FIRST '\n' only and take the rest by length, not by scanning for
+        # another delimiter, so embedded '\n' bytes in content are safe.
+        header, sep, content = payload.partition(b"\n")
+        if not sep:
+            raise ProtocolError(f"unexpected reply to READ {path}: {payload!r}")
+        header_text = header.decode("utf-8")
+        parts = header_text.split()
         if len(parts) < 3 or parts[0] != "OK" or parts[1] != "READ":
-            raise ProtocolError(f"unexpected reply to READ {path}: {reply!r}")
-        payload_line = self._read_line()
-        return payload_line.encode("utf-8")
+            raise ProtocolError(f"unexpected reply to READ {path}: {header_text!r}")
+        return content
 
     def list_files(self) -> list[str]:
-        self._send_line("LIST")
-        reply = self._read_line()
-        if reply.startswith("ERR LOCKED"):
+        self._send_frame(b"LIST")
+        payload = self._read_frame()
+        if payload.startswith(b"ERR LOCKED"):
             raise DeviceLockedError("cannot list files: device is locked")
-        parts = reply.split()
+        lines = payload.decode("utf-8").split("\n")
+        parts = lines[0].split()
         if len(parts) != 3 or parts[0] != "OK" or parts[1] != "LIST":
-            raise ProtocolError(f"unexpected reply to LIST: {reply!r}")
+            raise ProtocolError(f"unexpected reply to LIST: {lines[0]!r}")
         n = int(parts[2])
-        return [self._read_line() for _ in range(n)]
+        return lines[1 : 1 + n]
 
 
 def _parse_kv_reply(reply: str, expect_prefix: str) -> dict[str, str]:

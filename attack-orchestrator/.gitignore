@@ -3,5 +3,6 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 simulator/simulator
+simulator/*.dSYM/
 *.o
 .DS_Store
