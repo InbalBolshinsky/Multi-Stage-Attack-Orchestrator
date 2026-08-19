@@ -6,3 +6,4 @@ simulator/simulator
 simulator/*.dSYM/
 *.o
 .DS_Store
+main.py

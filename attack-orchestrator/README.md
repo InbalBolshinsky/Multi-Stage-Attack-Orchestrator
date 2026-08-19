@@ -39,8 +39,9 @@ session.close()
 Orchestrator
   ├─ AttackSelector       filters compatible attacks, ranks by estimated success
   ├─ Attack (interface)   Composite of Stages; is_compatible(), run()
-  │    ├─ Checkm8StyleAttack   (example: bootrom-level, old hardware, low battery floor)
-  │    └─ AgentStyleAttack     (example: sideloaded agent, newer iOS, higher battery floor)
+  │    ├─ Checkm8StyleAttack    (example: bootrom-level, old hardware, low battery floor)
+  │    ├─ CheckrainStyleAttack  (example: full jailbreak on that same bootrom exploit, narrower device subset)
+  │    └─ AgentStyleAttack      (example: sideloaded agent, newer iOS, higher battery floor)
   ├─ Stage (interface)    one step; declares an estimated success_probability
   ├─ Protocol (interface) Bridge: how communication actually happens
   │    ├─ FakeProtocol         in-memory, for Part 1 tests -- no network
@@ -101,7 +102,11 @@ tries the next one down the list.
 Ties are broken by fewer stages first — a shorter chain has fewer places to
 fail and costs less time to attempt, which seemed like a reasonable
 default; this is called out explicitly in code as a judgment call rather
-than a "correct" answer.
+than a "correct" answer. `test_ties_broken_by_fewer_stages` in
+`test_selector.py` isolates this rule with two minimal synthetic attacks
+built to have an exact probability tie (0.5 × 0.5 == 0.25, exactly
+representable in binary floating point) rather than contorting the real
+example attacks' realistic numbers to coincide.
 
 ### 2. What should an attack check before it runs?
 
@@ -215,8 +220,13 @@ and against the real simulator's `--drop-stage`); a device crash falling
 straight through to the next attack with **zero** reconnect attempts,
 proving it gets the stage-logic-failure policy rather than the drop's
 retry policy (again both against `FakeProtocol` and the real simulator's
-`--crash-stage`); and a simulator-level sanity check that `READ` is
-refused before any attack unlocks the device.
+`--crash-stage`); a simulator-level sanity check that `READ` is refused
+before any attack unlocks the device; and, in `test_selector.py`, the
+three-attack case where two bootrom-based attacks (`checkm8_style`,
+`checkrain_style`) are simultaneously compatible on shared hardware and get
+ranked by estimated probability, plus an isolated check (via two minimal
+synthetic attacks, not the real examples) that a probability tie is broken
+by fewer stages.
 
 ## What's deliberately out of scope
 

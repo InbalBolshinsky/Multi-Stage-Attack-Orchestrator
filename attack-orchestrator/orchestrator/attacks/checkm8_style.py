@@ -1,6 +1,14 @@
 from ..attack import Attack
 from ..stage import Stage
 
+# Hardware generations vulnerable to the unpatchable checkm8 bootrom exploit.
+# Shared with CheckrainStyleAttack (checkrain_style.py) since it's literally
+# the same underlying bootrom exploit, just packaged into a full jailbreak
+# rather than a bare DFU ramdisk mount -- checkrain's own supported-device
+# list is a *subset* of this, not identical to it (see checkrain_style.py),
+# which is true to the real-world tool.
+BOOTROM_VULNERABLE_MODELS = frozenset({"iPhone8,1", "iPhone8,2", "iPhone10,1", "iPhone10,4", "iPhone12,1"})
+
 
 class Checkm8StyleAttack(Attack):
     """
@@ -14,7 +22,7 @@ class Checkm8StyleAttack(Attack):
     attack_id = "checkm8_style"
     name = "Bootrom-level exploit"
 
-    compatible_models = frozenset({"iPhone8,1", "iPhone8,2", "iPhone10,1", "iPhone10,4", "iPhone12,1"})
+    compatible_models = BOOTROM_VULNERABLE_MODELS
     min_ios = None      # unpatchable at the bootrom -- applies across iOS versions
     max_ios = "15.7"    # ...within the range this exploit was actually written for
     min_battery = 10    # DFU-mode-style entry needs very little charge
