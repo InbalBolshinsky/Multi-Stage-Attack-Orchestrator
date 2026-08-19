@@ -54,6 +54,7 @@ length or a connection that dies mid-frame.
 OK HELLO model=<model> ios=<version> battery=<0-100> locked=<0|1>
 OK STAGE <id> SUCCESS
 OK STAGE <id> FAIL
+ERR CRASH <id>
 OK UNLOCK locked=0
 OK READ <path> <byte-length>\n<raw file content>
 OK LIST <n>\n<path 1>\n<path 2>\n...\n<path n>
@@ -75,14 +76,24 @@ Notes:
 - A dropped connection is *silent* -- no `ERR` reply, the socket just
   closes (a clean close at a frame boundary, i.e. before any bytes of the
   next frame's length prefix arrive). This deliberately mirrors a real
-  device failure (crash, cable pull, bootloader hang) rather than a clean
-  protocol-level error, since the orchestrator has to be able to tell the
-  difference between "the device told me no" (`ERR`/`FAIL`) and "the
-  device just vanished" (closed socket) -- see the README section on
-  failure handling for why that distinction drives different retry
-  behavior. A close that happens *mid-frame* (after the length prefix but
-  before all its payload bytes arrive) is likewise treated as a dropped
-  connection, not a malformed message -- both sides just stop.
+  device failure (cable pull, bootloader hang -- something with no
+  opportunity to report anything) rather than a clean protocol-level
+  error, since the orchestrator has to be able to tell the difference
+  between "the device told me no" (`ERR`/`FAIL`) and "the device just
+  vanished" (closed socket) -- see the README section on failure handling
+  for why that distinction drives different retry behavior. A close that
+  happens *mid-frame* (after the length prefix but before all its payload
+  bytes arrive) is likewise treated as a dropped connection, not a
+  malformed message -- both sides just stop.
+- `ERR CRASH <id>` is a *third* failure mode, distinct from both an
+  ordinary `FAIL` and a silent drop: the device gets a chance to report
+  that running this stage broke it, and only *then* the connection
+  closes (same as a `--drop-stage`, just with a reply sent first). The
+  client's read of this reply succeeds -- that's the actual signal that
+  distinguishes a crash from a silent drop, where the read itself is what
+  fails. See the README section on failure handling for why a crash gets
+  its own no-retry policy rather than being treated as either a plain
+  stage failure or a transient drop.
 
 ## Simulator configuration (not part of the wire protocol)
 
@@ -92,9 +103,10 @@ not something a real device would expose to an attacker:
 
 ```
 ./simulator --port 9000 --model iPhone8,1 --ios 14.4 --battery 60 \
-    --fail-stage 2 --fail-stage 5 --drop-stage 7
+    --fail-stage 2 --fail-stage 5 --drop-stage 7 --crash-stage 3
 ```
 
 - `--fail-stage <id>` (repeatable): that stage always returns `FAIL`
 - `--drop-stage <id>`: the connection is silently closed when that stage is requested
+- `--crash-stage <id>`: that stage replies `ERR CRASH <id>`, then the connection closes
 - device info flags (`--model`, `--ios`, `--battery`) control what `HELLO` reports

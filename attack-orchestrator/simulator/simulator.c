@@ -5,8 +5,10 @@
  * PROTOCOL.md) and stands in for a real mobile device: it exposes device
  * info, "runs" attack stages with configurable success/failure, and once
  * "unlocked" serves reads from a tiny in-memory filesystem. It can also
- * simulate a connection that drops mid-chain, which is the main failure
- * mode the orchestrator has to handle gracefully.
+ * simulate two distinct failure modes the orchestrator has to handle
+ * differently: a connection that drops mid-chain with no explanation
+ * (--drop-stage), and a device that explicitly reports a crash before the
+ * connection dies (--crash-stage).
  *
  * Every message (either direction) is [4-byte big-endian length][payload].
  * The length prefix means framing never depends on scanning for a
@@ -60,7 +62,8 @@ typedef struct {
     int locked;       /* 1 = locked, 0 = unlocked */
     int fail_stages[MAX_FAIL_STAGES];
     int fail_stage_count;
-    int drop_at_stage; /* stage id at which to silently close the connection; -1 = never */
+    int drop_at_stage;  /* stage id at which to silently close the connection; -1 = never */
+    int crash_at_stage; /* stage id at which to send ERR CRASH, then close; -1 = never */
     unsigned int seed;
 } DeviceConfig;
 
@@ -244,6 +247,12 @@ static void handle_connection(int fd) {
             handle_hello(fd);
         } else if (strcmp(cmd, "STAGE") == 0) {
             int stage_id = atoi(arg);
+            if (g_cfg.crash_at_stage == stage_id) {
+                fprintf(stderr, "[sim] device crash at stage %d\n", stage_id);
+                send_textf(fd, "ERR CRASH %d", stage_id);
+                close(fd);
+                return;
+            }
             if (g_cfg.drop_at_stage == stage_id) {
                 fprintf(stderr, "[sim] dropping connection at stage %d\n", stage_id);
                 close(fd);
@@ -273,6 +282,7 @@ static void parse_args(int argc, char **argv) {
     g_cfg.locked = 1;
     g_cfg.fail_stage_count = 0;
     g_cfg.drop_at_stage = -1;
+    g_cfg.crash_at_stage = -1;
     g_cfg.seed = 42;
 
     for (int i = 1; i < argc; i++) {
@@ -288,6 +298,8 @@ static void parse_args(int argc, char **argv) {
             }
         } else if (strcmp(argv[i], "--drop-stage") == 0 && i + 1 < argc) {
             g_cfg.drop_at_stage = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--crash-stage") == 0 && i + 1 < argc) {
+            g_cfg.crash_at_stage = atoi(argv[++i]);
         }
     }
 }

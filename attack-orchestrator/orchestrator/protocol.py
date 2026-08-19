@@ -25,7 +25,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
 from .device import DeviceState
-from .errors import ConnectionDropped, DeviceLockedError, FileNotFoundOnDevice, ProtocolError
+from .errors import ConnectionDropped, DeviceCrashed, DeviceLockedError, FileNotFoundOnDevice, ProtocolError
 
 
 class Protocol(ABC):
@@ -45,9 +45,11 @@ class Protocol(ABC):
         Ask the device to execute one attack stage.
 
         Returns True/False for success/failure. Raises ConnectionDropped if
-        the channel dies before a response arrives -- callers must not
-        conflate "stage failed" with "connection dropped"; they get
-        different handling (see README).
+        the channel dies before a response arrives, or DeviceCrashed if the
+        device explicitly reports (before the channel dies) that this stage
+        crashed it -- callers must not conflate "stage failed" with
+        "connection dropped" with "device crashed"; each gets different
+        handling (see README).
         """
 
     @abstractmethod
@@ -89,6 +91,7 @@ class FakeProtocol(Protocol):
     battery: int = 80
     fail_stages: frozenset[int] = field(default_factory=frozenset)
     drop_at_stage: int | None = None
+    crash_at_stage: int | None = None
     files: dict[str, bytes] = field(default_factory=dict)
     success_probabilities: dict[int, float] = field(default_factory=dict)
     rng: random.Random = field(default_factory=random.Random)
@@ -106,6 +109,12 @@ class FakeProtocol(Protocol):
     def run_stage(self, stage_id: int) -> bool:
         if not self._connected:
             raise ProtocolError("run_stage called before connect()")
+        if self.crash_at_stage == stage_id:
+            # Deliberately does NOT touch _connected: unlike drop_at_stage,
+            # a crash isn't modeling transport death here, just the
+            # protocol-level signal a real device would send before the
+            # socket happens to close -- see DeviceCrashed's docstring.
+            raise DeviceCrashed(f"device crashed at stage {stage_id}")
         if self.drop_at_stage == stage_id:
             self._connected = False
             raise ConnectionDropped(f"connection dropped at stage {stage_id}")
@@ -216,6 +225,12 @@ class TCPProtocol(Protocol):
     def run_stage(self, stage_id: int) -> bool:
         self._send_frame(f"STAGE {stage_id}".encode("utf-8"))
         reply = self._read_frame().decode("utf-8")  # raises ConnectionDropped if the sim closed on us
+        # A crash means the read itself SUCCEEDS -- the device answers
+        # before its connection dies -- unlike a silent drop, where this
+        # _read_frame() call above is the thing that fails. That's the
+        # actual distinguishing signal between the two failure modes.
+        if reply.startswith("ERR CRASH"):
+            raise DeviceCrashed(f"device crashed during stage {stage_id}")
         parts = reply.split()
         if len(parts) >= 4 and parts[0] == "OK" and parts[1] == "STAGE":
             return parts[3] == "SUCCESS"

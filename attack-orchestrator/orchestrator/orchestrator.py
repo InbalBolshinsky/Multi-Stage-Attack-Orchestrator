@@ -17,6 +17,11 @@ it, and implements the failure-handling policy decided during planning:
     extraction tooling treats a failed attempt -- prefer a clean retry over
     resuming blind).
 
+  - Device crashed mid-chain -> the stage itself broke the device. Not
+    transient (unlike a drop), so no reconnect-and-retry of this attack;
+    treated the same as a stage-logic failure, abort and fall through to
+    the next compatible attack in the queue.
+
   - Queue exhausted -> NoViableAttackError.
 """
 
@@ -70,10 +75,11 @@ class Orchestrator:
                 context = AttackContext(protocol=self.protocol, device=device)
                 return Session(context)
             logger.info(
-                "attack %s failed at stage %s (dropped=%s); trying next candidate",
+                "attack %s failed at stage %s (dropped=%s, crashed=%s); trying next candidate",
                 attack.attack_id,
                 result.failed_stage.stage_id if result.failed_stage else None,
                 result.connection_dropped,
+                result.device_crashed,
             )
 
         self.protocol.close()
@@ -85,7 +91,16 @@ class Orchestrator:
         context = AttackContext(protocol=self.protocol, device=device)
         attempt = 0
         result = attack.run(context)
-        while result.connection_dropped and attempt < self.max_connection_retries:
+        # `and not result.device_crashed` is redundant given how AttackResult
+        # is constructed (Attack.run() never sets both flags at once) -- kept
+        # explicit anyway because "never retry a crash" is the actual policy
+        # this loop exists to enforce, not just an incidental consequence of
+        # the two flags happening to be mutually exclusive today.
+        while (
+            result.connection_dropped
+            and not result.device_crashed
+            and attempt < self.max_connection_retries
+        ):
             attempt += 1
             logger.warning(
                 "connection dropped during %s (attempt %d/%d); reconnecting",

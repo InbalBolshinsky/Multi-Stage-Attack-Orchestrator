@@ -23,6 +23,26 @@ class ConnectionDropped(OrchestratorError):
     """
 
 
+class DeviceCrashed(OrchestratorError):
+    """
+    The device explicitly reported that it crashed as a result of the
+    stage just run, before the connection closed.
+
+    Deliberately a *sibling* of ConnectionDropped, not a subclass. The two
+    look similar at the socket level (the connection ends up dead either
+    way) but mean opposite things for retry policy: a plain drop is
+    transport-layer noise unrelated to the exploit, so it's worth
+    reconnecting and retrying the same attack; a crash is a verdict on the
+    exploit itself -- this stage broke the device -- so retrying it again
+    isn't expected to end differently, same as an ordinary stage-logic
+    failure. Making DeviceCrashed a subclass of ConnectionDropped would let
+    any `except ConnectionDropped` handler silently catch crashes too and
+    apply the reconnect-and-retry policy to them by accident; keeping them
+    as siblings forces every catch site to decide on purpose which failure
+    mode it's handling.
+    """
+
+
 class DeviceLockedError(OrchestratorError):
     """Attempted a locked-only operation (e.g. read_file) before any
     attack chain completed successfully."""

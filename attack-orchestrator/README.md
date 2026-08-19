@@ -126,7 +126,7 @@ is to get from locked to unlocked, so it wouldn't make sense to require
 
 ### 3. Stages fail — what does that mean for the rest of the chain?
 
-The chain distinguishes **two different failure modes**, because they
+The chain distinguishes **three different failure modes**, because they
 warrant different handling:
 
 - **Stage-logic failure** (the device responded, the stage just didn't
@@ -148,9 +148,22 @@ warrant different handling:
   blind — this mirrors how real bootloader-exploit tooling favors starting
   from a known-clean state over continuing after a failed attempt.
 
+- **Device crashed mid-chain** (`DeviceCrashed`, the wire protocol's `ERR
+  CRASH <id>`) → the device got to explicitly report that this stage broke
+  it, before the connection closed. This looks similar to a dropped
+  connection at the socket level (the connection ends up dead either way)
+  but means the opposite thing: it's not transient/environmental, it's a
+  verdict on the exploit — this stage crashes this device. So it gets the
+  **stage-logic-failure treatment**, not the drop's reconnect-and-retry:
+  abort this attack, fall through to the next one, no retry of the same
+  attack. `DeviceCrashed` is deliberately a *sibling* of `ConnectionDropped`
+  in the exception hierarchy (not a subclass) specifically so that nothing
+  catching `ConnectionDropped` broadly can accidentally catch a crash too
+  and apply the wrong policy to it.
+
 If the queue of compatible attacks is exhausted without success (whether
-by logic failures or by connection retries running out), `run()` raises
-`NoViableAttackError` with a full audit trail available on
+by logic failures, crashes, or connection retries running out), `run()`
+raises `NoViableAttackError` with a full audit trail available on
 `orchestrator.attempts`.
 
 ### 4. From "read one file" to "extract everything"
@@ -198,8 +211,12 @@ Scenarios covered: clean success; stage-failure fallback to a second
 compatible attack; exhaustion when no attack is compatible; exhaustion when
 every compatible attack fails; a persistent connection drop correctly
 bounded by retry count (both against `FakeProtocol`, scripted precisely,
-and against the real simulator's `--drop-stage`); and a simulator-level
-sanity check that `READ` is refused before any attack unlocks the device.
+and against the real simulator's `--drop-stage`); a device crash falling
+straight through to the next attack with **zero** reconnect attempts,
+proving it gets the stage-logic-failure policy rather than the drop's
+retry policy (again both against `FakeProtocol` and the real simulator's
+`--crash-stage`); and a simulator-level sanity check that `READ` is
+refused before any attack unlocks the device.
 
 ## What's deliberately out of scope
 

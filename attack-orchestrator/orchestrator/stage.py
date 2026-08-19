@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .context import AttackContext
-from .errors import ConnectionDropped
+from .errors import ConnectionDropped, DeviceCrashed
 
 
 @dataclass(frozen=True)
@@ -46,14 +46,14 @@ class Stage:
         """
         Execute this stage against the device behind context.protocol.
 
-        Lets ConnectionDropped propagate rather than catching it -- a
-        dropped connection is not a stage failure, it's a different failure
-        mode the Attack/Orchestrator layer needs to see and handle
-        distinctly (see README, "retry vs. abort vs. fall back").
+        Lets ConnectionDropped and DeviceCrashed propagate rather than
+        catching them -- neither is an ordinary stage failure, each is a
+        different failure mode the Attack/Orchestrator layer needs to see
+        and handle distinctly (see README, "retry vs. abort vs. fall back").
         """
         try:
             success = context.protocol.run_stage(self.stage_id)
-        except ConnectionDropped:
+        except (ConnectionDropped, DeviceCrashed):
             raise
         return StageResult(self.stage_id, self.name, success)
 

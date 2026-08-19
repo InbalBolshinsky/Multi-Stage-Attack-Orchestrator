@@ -18,7 +18,7 @@ from functools import reduce
 
 from .context import AttackContext
 from .device import DeviceState, IOSVersion
-from .errors import ConnectionDropped
+from .errors import ConnectionDropped, DeviceCrashed
 from .stage import Stage, StageResult
 
 
@@ -29,6 +29,7 @@ class AttackResult:
     stage_results: list[StageResult]
     failed_stage: Stage | None = None
     connection_dropped: bool = False
+    device_crashed: bool = False
 
 
 class Attack:
@@ -88,6 +89,14 @@ class Attack:
         ordinary stage failure, so the Orchestrator can choose different
         handling (e.g. bounded reconnect-and-retry at the transport layer)
         instead of immediately writing off the whole attack.
+
+        A device crash is reported distinctly again, from both of the
+        above: like a dropped connection, it's not an ordinary stage
+        failure to retry in place -- but unlike a dropped connection, it's
+        not transient/environmental either. The stage itself broke the
+        device, so it gets the same "don't retry, fall back to the next
+        attack" handling as a stage-logic failure, just flagged so the
+        Orchestrator's audit trail (and log line) can tell the two apart.
         """
         results: list[StageResult] = []
         for stage in self.stages:
@@ -100,6 +109,14 @@ class Attack:
                     stage_results=results,
                     failed_stage=stage,
                     connection_dropped=True,
+                )
+            except DeviceCrashed:
+                return AttackResult(
+                    attack_id=self.attack_id,
+                    success=False,
+                    stage_results=results,
+                    failed_stage=stage,
+                    device_crashed=True,
                 )
             results.append(result)
             if not result.success:
