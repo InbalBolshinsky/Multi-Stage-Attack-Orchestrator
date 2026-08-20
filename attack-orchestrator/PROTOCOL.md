@@ -51,7 +51,7 @@ length or a connection that dies mid-frame.
 ## Responses (server → client payload)
 
 ```
-OK HELLO model=<model> ios=<version> battery=<0-100> locked=<0|1>
+OK HELLO model=<model> ios=<version> battery=<0-100> locked=<0|1> afu=<0|1> jailbroken=<0|1>
 OK STAGE <id> SUCCESS
 OK STAGE <id> FAIL
 ERR CRASH <id>
@@ -65,6 +65,19 @@ ERR UNKNOWN <command>
 ```
 
 Notes:
+- `afu` in `OK HELLO` is 1 if the passcode has been entered at least once
+  since the device's last boot ("after first unlock"), 0 if not ("before
+  first unlock" -- a freshly booted, never-unlocked device). This is
+  independent of `locked`: a device can be AFU but currently re-locked at
+  the lock screen. It's mobile-forensics terminology for a real
+  distinction some extraction approaches depend on -- see the README's
+  discussion of `requires_afu`/`requires_bfu`.
+- `jailbroken` in `OK HELLO` is 1 if the device already has a working
+  jailbreak (e.g. from a prior checkra1n/unc0ver run) exposing direct
+  filesystem access, 0 for a stock device. Independent of `locked`/`afu`
+  for the same reason a real jailbreak's SSH daemon typically runs
+  persistently regardless of lock-screen or first-unlock state -- see the
+  README's discussion of `requires_jailbreak`.
 - `READ`'s reply is a single frame: a header line (`OK READ <path>
   <byte-length>`), one `\n`, then the raw content -- not a separate frame.
   The frame's own length prefix already tells the receiver exactly how
@@ -103,10 +116,12 @@ not something a real device would expose to an attacker:
 
 ```
 ./simulator --port 9000 --model iPhone8,1 --ios 14.4 --battery 60 \
-    --fail-stage 2 --fail-stage 5 --drop-stage 7 --crash-stage 3
+    --fail-stage 2 --fail-stage 5 --drop-stage 7 --crash-stage 3 --bfu --jailbroken
 ```
 
 - `--fail-stage <id>` (repeatable): that stage always returns `FAIL`
 - `--drop-stage <id>`: the connection is silently closed when that stage is requested
 - `--crash-stage <id>`: that stage replies `ERR CRASH <id>`, then the connection closes
 - device info flags (`--model`, `--ios`, `--battery`) control what `HELLO` reports
+- `--bfu`: report the device as before-first-unlock (`afu=0`) instead of the default after-first-unlock (`afu=1`)
+- `--jailbroken`: report the device as already jailbroken (`jailbroken=1`) instead of the default stock (`jailbroken=0`)

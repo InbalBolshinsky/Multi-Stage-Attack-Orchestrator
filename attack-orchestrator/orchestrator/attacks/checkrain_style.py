@@ -22,6 +22,9 @@ class CheckrainStyleAttack(Attack):
       more steps, more places to fail, which is why the selector still
       prefers the plain bootrom exploit when both are compatible and the
       caller only needs file read access, not a full jailbreak.
+
+    Same bootrom entry point as Checkm8StyleAttack, so it's likewise
+    unconstrained on AFU/BFU state (see that class's docstring).
     """
 
     attack_id = "checkrain_style"

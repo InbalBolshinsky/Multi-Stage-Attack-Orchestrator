@@ -89,9 +89,14 @@ class FakeProtocol(Protocol):
     model: str = "iPhone12,1"
     ios_version: str = "14.4"
     battery: int = 80
+    after_first_unlock: bool = True
+    jailbroken: bool = False
     fail_stages: frozenset[int] = field(default_factory=frozenset)
     drop_at_stage: int | None = None
     crash_at_stage: int | None = None
+    drop_on_read: str | None = None  # path that raises ConnectionDropped when read
+    crash_on_read: str | None = None  # path that raises DeviceCrashed when read
+    drop_on_list: bool = False  # raise ConnectionDropped from list_files()
     files: dict[str, bytes] = field(default_factory=dict)
     success_probabilities: dict[int, float] = field(default_factory=dict)
     rng: random.Random = field(default_factory=random.Random)
@@ -104,7 +109,14 @@ class FakeProtocol(Protocol):
         self._locked = True
 
     def hello(self) -> DeviceState:
-        return DeviceState.from_wire(self.model, self.ios_version, self.battery, self._locked)
+        return DeviceState.from_wire(
+            self.model,
+            self.ios_version,
+            self.battery,
+            self._locked,
+            self.after_first_unlock,
+            self.jailbroken,
+        )
 
     def run_stage(self, stage_id: int) -> bool:
         if not self._connected:
@@ -131,6 +143,11 @@ class FakeProtocol(Protocol):
     def read_file(self, path: str) -> bytes:
         if self._locked:
             raise DeviceLockedError(f"cannot read {path!r}: device is locked")
+        if self.crash_on_read == path:
+            raise DeviceCrashed(f"device crashed while reading {path}")
+        if self.drop_on_read == path:
+            self._connected = False
+            raise ConnectionDropped(f"connection dropped while reading {path}")
         if path not in self.files:
             raise FileNotFoundOnDevice(path)
         return self.files[path]
@@ -138,6 +155,9 @@ class FakeProtocol(Protocol):
     def list_files(self) -> list[str]:
         if self._locked:
             raise DeviceLockedError("cannot list files: device is locked")
+        if self.drop_on_list:
+            self._connected = False
+            raise ConnectionDropped("connection dropped while listing files")
         return list(self.files.keys())
 
     def close(self) -> None:
@@ -155,7 +175,7 @@ class FakeProtocol(Protocol):
 # can safely contain '\n' or anything else.
 # ---------------------------------------------------------------------------
 
-MAX_FRAME_BYTES = 1 << 20  # sanity bound on a declared frame length; matches simulator.c
+MAX_FRAME_BYTES = 64 * 1024  # sanity bound on a declared frame length; matches simulator.c's MAX_FRAME
 
 
 class TCPProtocol(Protocol):
@@ -220,6 +240,8 @@ class TCPProtocol(Protocol):
             ios_version=fields["ios"],
             battery=int(fields["battery"]),
             locked=fields["locked"] == "1",
+            after_first_unlock=fields["afu"] == "1",
+            jailbroken=fields["jailbroken"] == "1",
         )
 
     def run_stage(self, stage_id: int) -> bool:
@@ -256,9 +278,21 @@ class TCPProtocol(Protocol):
         if not sep:
             raise ProtocolError(f"unexpected reply to READ {path}: {payload!r}")
         header_text = header.decode("utf-8")
+        # Split from the right for the length: `path` may itself contain
+        # spaces (see simulator.c's sscanf, which captures it verbatim), so
+        # parts[2] isn't reliably "the path" -- but the length is always
+        # the last whitespace-separated token, since it's a plain integer.
         parts = header_text.split()
         if len(parts) < 3 or parts[0] != "OK" or parts[1] != "READ":
             raise ProtocolError(f"unexpected reply to READ {path}: {header_text!r}")
+        try:
+            declared_len = int(parts[-1])
+        except ValueError:
+            raise ProtocolError(f"unexpected reply to READ {path}: {header_text!r}")
+        if declared_len != len(content):
+            raise ProtocolError(
+                f"READ {path}: header declared {declared_len} content bytes, got {len(content)}"
+            )
         return content
 
     def list_files(self) -> list[str]:

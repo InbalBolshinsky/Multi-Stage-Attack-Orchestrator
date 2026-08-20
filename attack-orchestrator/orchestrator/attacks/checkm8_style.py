@@ -17,6 +17,12 @@ class Checkm8StyleAttack(Attack):
     patch level" but only to specific hardware generations. Because it
     doesn't rely on booting the installed OS, it can afford a much lower
     battery threshold than an approach that needs the device fully running.
+
+    Also doesn't care whether the device is AFU or BFU (no `requires_afu`/
+    `requires_bfu`) -- entering DFU mode and exploiting the bootrom happens
+    below the OS entirely, before first-unlock state would matter. This is
+    in fact the attack's real practical edge: it's usable on a freshly
+    booted, never-unlocked device that agent_style.py can't touch.
     """
 
     attack_id = "checkm8_style"
