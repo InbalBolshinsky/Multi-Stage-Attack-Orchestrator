@@ -69,6 +69,8 @@ Orchestrator
 
 **Considered and rejected: decision tree** for attack selection. Early on this looked appealing ("pick an attack based on device state"), but compatibility per attack is a flat conjunction of independent checks (model in set? iOS in range? battery sufficient? AFU/BFU? jailbroken?) - there's no branching structure that differs attack-to-attack to justify a tree. So I went with filter-then-rank instead (see below).
 
+<img width="2060" height="1892" alt="Blank diagram" src="https://github.com/user-attachments/assets/010e704e-ee99-492c-a0be-2c02d20795ef" />
+
 ## Design decisions
 
 The assignment calls out four things worth thinking about. Here's how each was resolved, and why, where more than one reasonable option existed.
