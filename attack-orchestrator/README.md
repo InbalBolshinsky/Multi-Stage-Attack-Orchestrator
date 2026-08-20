@@ -36,17 +36,22 @@ session.close()
 
 ```
 Orchestrator
-  ├─ AttackSelector   
+  ├─ AttackSelector
+  │ 
   ├─ Attack (interface)   
   │    ├─ Checkm8StyleAttack  
   │    ├─ CheckrainStyleAttack  
   │    ├─ AgentStyleAttack  
-  │    └─ JailbreakSSHStyleAttack 
-  ├─ Stage (interface)  
+  │    └─ JailbreakSSHStyleAttack
+  │
+  ├─ Stage (interface)
+  │
   ├─ Protocol (interface) Bridge: how communication actually happens
   │    ├─ FakeProtocol   
-  │    └─ TCPProtocol    
-  ├─ AttackContext   
+  │    └─ TCPProtocol
+  │  
+  ├─ AttackContext
+  │  
   └─ Session
 
 ```
