@@ -51,6 +51,19 @@ class Attack:
     max_ios: str | None = None
     compatible_models: frozenset[str] | None = None
     min_battery: int = 0
+    # False means "no constraint on this dimension" -- most attacks don't
+    # care whether the device has been unlocked since boot. Set exactly one
+    # of these True for an attack whose approach depends on that state (see
+    # agent_style.py). Not mutually exclusive by construction, but setting
+    # both True would make the attack universally incompatible, which is
+    # never an intended configuration.
+    requires_afu: bool = False
+    requires_bfu: bool = False
+    # Same "False = no constraint" convention. Set True only for an attack
+    # whose whole approach *is* piggybacking on an existing jailbreak
+    # (see jailbreak_ssh_style.py) -- everything else should be reachable
+    # regardless of jailbreak status, same as they don't care about AFU/BFU.
+    requires_jailbreak: bool = False
 
     def __init__(self, stages: list[Stage]) -> None:
         if not stages:
@@ -67,6 +80,12 @@ class Attack:
         if self.max_ios is not None and device.ios_version > IOSVersion(self.max_ios):
             return False
         if device.battery < self.min_battery:
+            return False
+        if self.requires_afu and not device.after_first_unlock:
+            return False
+        if self.requires_bfu and device.after_first_unlock:
+            return False
+        if self.requires_jailbreak and not device.jailbroken:
             return False
         return True
 

@@ -9,6 +9,7 @@ from .device import DeviceState
 from .errors import (
     OrchestratorError,
     ConnectionDropped,
+    DeviceCrashed,
     DeviceLockedError,
     FileNotFoundOnDevice,
     NoViableAttackError,
@@ -26,6 +27,7 @@ __all__ = [
     "DeviceState",
     "OrchestratorError",
     "ConnectionDropped",
+    "DeviceCrashed",
     "DeviceLockedError",
     "FileNotFoundOnDevice",
     "NoViableAttackError",
