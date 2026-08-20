@@ -25,9 +25,9 @@ class TestCheckm8StyleCompatibility:
         "kwargs, expected",
         [
             ({"model": "iPhone8,1", "ios": "14.4", "battery": 15}, True),
-            ({"model": "iPhone15,1", "ios": "14.4"}, False),  # unsupported model
-            ({"model": "iPhone8,1", "ios": "16.0"}, False),  # ios too new
-            ({"model": "iPhone8,1", "ios": "14.4", "battery": 5}, False),  # battery too low
+            ({"model": "iPhone15,1", "ios": "14.4"}, False),
+            ({"model": "iPhone8,1", "ios": "16.0"}, False),
+            ({"model": "iPhone8,1", "ios": "14.4", "battery": 5}, False),
         ],
         ids=["old_device", "unsupported_model", "ios_too_new", "low_battery"],
     )
@@ -44,12 +44,10 @@ class TestCheckrainStyleCompatibility:
         "kwargs, expected",
         [
             ({"model": "iPhone10,1", "ios": "14.4", "battery": 20}, True),
-            # iPhone8,1 is checkm8-vulnerable hardware, but checkra1n's own
-            # supported list is a strict subset of that -- it doesn't cover it
+            # checkra1n's supported-device list doesn't include this model
             ({"model": "iPhone8,1", "ios": "14.4"}, False),
-            # unlike checkm8_style, checkra1n never gained solid iOS 15+ support
+            # checkra1n never gained solid support past iOS 14
             ({"model": "iPhone10,1", "ios": "15.0"}, False),
-            # higher floor than checkm8_style: it boots further into userland
             ({"model": "iPhone10,1", "ios": "14.4", "battery": 10}, False),
         ],
         ids=["within_supported_window", "model_outside_subset", "past_ios_ceiling", "low_battery"],
@@ -58,9 +56,7 @@ class TestCheckrainStyleCompatibility:
         assert CheckrainStyleAttack().is_compatible(device(**kwargs)) == expected
 
     def test_lower_estimated_probability_than_checkm8_style_despite_shared_first_stages(self):
-        # same DFU/bootrom entry point and odds, but two extra stages
-        # (patched kernel boot, Cydia install) pull the overall chain odds
-        # below the bare-ramdisk checkm8_style attack
+        # two extra stages (kernel boot, Cydia install) pull the odds down
         assert CheckrainStyleAttack().estimated_success_probability < Checkm8StyleAttack().estimated_success_probability
 
 
@@ -85,14 +81,12 @@ class TestAfuBfuCompatibility:
         ids=["bfu_incompatible", "afu_compatible"],
     )
     def test_agent_style_requires_afu(self, after_first_unlock, expected):
-        # sideloading/trust leans on state that only exists once the device
-        # has been unlocked at least once since boot
+        # sideloading needs state that only exists after the device unlocks once
         d = device(model="iPhone15,1", ios="17.0", battery=50, after_first_unlock=after_first_unlock)
         assert AgentStyleAttack().is_compatible(d) == expected
 
     def test_checkm8_style_compatible_regardless_of_afu_bfu(self):
-        # bootrom-level exploit happens below the OS, so first-unlock state
-        # is irrelevant -- this is its actual practical edge over agent_style
+        # runs below the OS, so first-unlock state doesn't matter
         afu = device(model="iPhone8,1", ios="14.4", battery=15, after_first_unlock=True)
         bfu = device(model="iPhone8,1", ios="14.4", battery=15, after_first_unlock=False)
         assert Checkm8StyleAttack().is_compatible(afu)
@@ -104,8 +98,7 @@ class TestJailbreakSSHStyleCompatibility:
         "kwargs, expected",
         [
             ({"jailbroken": False}, False),
-            # no model/iOS bounds -- the jailbreak already did the
-            # hardware/version-specific work
+            # no model/iOS bounds needed - the jailbreak already did that work
             ({"model": "iPhone15,1", "ios": "17.0", "battery": 10, "jailbroken": True}, True),
         ],
         ids=["not_jailbroken", "jailbroken_regardless_of_model_or_ios"],
@@ -114,15 +107,12 @@ class TestJailbreakSSHStyleCompatibility:
         assert JailbreakSSHStyleAttack().is_compatible(device(**kwargs)) == expected
 
     def test_other_attacks_unaffected_by_jailbroken_flag(self):
-        # requires_jailbreak defaults to False -- jailbroken=True must not
-        # change compatibility for attacks that don't care about it
+        # requires_jailbreak defaults to False, so jailbroken=True shouldn't matter here
         d = device(model="iPhone8,1", ios="14.4", battery=60, jailbroken=True)
         assert Checkm8StyleAttack().is_compatible(d)
-        assert not AgentStyleAttack().is_compatible(d)  # excluded on iOS, unrelated to jailbreak
+        assert not AgentStyleAttack().is_compatible(d)  # fails on iOS version, not jailbreak
 
     def test_outranks_checkm8_style_when_both_compatible(self):
-        # on shared bootrom-vulnerable, jailbroken hardware, the
-        # already-jailbroken path's near-certain odds should rank first
         d = device(model="iPhone8,1", ios="14.4", battery=60, jailbroken=True)
         assert Checkm8StyleAttack().is_compatible(d)
         assert JailbreakSSHStyleAttack().is_compatible(d)
@@ -149,9 +139,9 @@ class TestIOSVersionComparison:
     @pytest.mark.parametrize(
         "lower, higher",
         [
-            ("9.0", "15.0"),  # numeric, not lexicographic -- "9" would otherwise sort after "1"
-            ("15.7", "16.0"),  # minor release
-            ("14.8", "14.8.1"),  # patch release
+            ("9.0", "15.0"),  # lexicographically "9.0" > "15.0", but numerically it's smaller
+            ("15.7", "16.0"),
+            ("14.8", "14.8.1"),
         ],
         ids=["numeric_not_lexicographic", "minor_release", "patch_release"],
     )

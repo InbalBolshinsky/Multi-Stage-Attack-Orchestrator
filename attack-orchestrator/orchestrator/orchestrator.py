@@ -1,26 +1,16 @@
 """
 Orchestrator: the top-level entry point. Connects, picks an attack, runs
-it, and implements the failure-handling policy decided during planning:
+it, and applies this failure-handling policy (see README):
 
-  - Stage-logic failure (a stage ran and returned False) -> abort this
-    attack, fall through to the next compatible attack in the queue. A
-    logical failure means this exploit doesn't apply/work here; retrying
-    the identical stage against the identical device state is not expected
-    to change the outcome.
+  - Stage logic failure (a stage returns False) -> this exploit doesn't
+    work here. Abort and fall through to the next compatible attack.
 
-  - Connection dropped mid-chain -> transient/environmental, not a verdict
-    on the exploit. Reconnect and retry THIS attack from the start, bounded
-    by max_connection_retries. Retrying from the start (not mid-chain) is
-    deliberate: a partially-applied exploit can leave the device in a state
-    we can't safely assume anything about, so we don't resume a chain
-    in-place after a drop (see README, grounded in how real low-level
-    extraction tooling treats a failed attempt -- prefer a clean retry over
-    resuming blind).
+  - Connection dropped mid-chain -> transient, not a verdict on the
+    exploit. Reconnect and retry this attack from the start (bounded by
+    max_connection_retries).
 
-  - Device crashed mid-chain -> the stage itself broke the device. Not
-    transient (unlike a drop), so no reconnect-and-retry of this attack;
-    treated the same as a stage-logic failure, abort and fall through to
-    the next compatible attack in the queue.
+  - Device crashed mid-chain -> the stage broke the device. Not transient,
+    so treated like a logic failure: abort and move to the next attack.
 
   - Queue exhausted -> NoViableAttackError.
 """
@@ -31,6 +21,7 @@ import logging
 
 from .attack import Attack, AttackResult
 from .context import AttackContext
+from .device import DeviceState
 from .errors import NoViableAttackError
 from .protocol import Protocol
 from .selector import AttackSelector
@@ -49,17 +40,15 @@ class Orchestrator:
         self.protocol = protocol
         self.selector = selector
         self.max_connection_retries = max_connection_retries
-        self.attempts: list[AttackResult] = []  # full audit trail, useful for tests/debugging
+        self.attempts: list[AttackResult] = []  # full audit trail
 
     def run(self) -> Session:
         """
-        Note: deliberately NOT a `with self.protocol:` block. A successful
-        run hands back a live Session that still needs the connection open
-        for read_file()/extract_all() -- closing on every exit (including
-        the success path, which a context manager would do as soon as we
-        return) would hand back a Session wired to a dead connection. We
-        only close explicitly on the failure paths below; a successful
-        Session owns the connection until the caller is done with it.
+        Not a `with self.protocol:` block on purpose: on success we hand
+        back a Session that still needs the connection open for
+        read_file()/extract_all(). We only close explicitly on the
+        failure paths below -- a successful Session owns the connection
+        until the caller is done with it.
         """
         self.protocol.connect()
         device = self.protocol.hello()
@@ -68,8 +57,8 @@ class Orchestrator:
             self.protocol.close()
             raise NoViableAttackError(f"no compatible attack for device {device!r}")
 
-        for attack in queue:
-            result = self._run_with_retries(attack, device)
+        for i, attack in enumerate(queue):
+            result, device = self._run_with_retries(attack, device)
             self.attempts.append(result)
             if result.success:
                 context = AttackContext(protocol=self.protocol, device=device)
@@ -81,21 +70,32 @@ class Orchestrator:
                 result.connection_dropped,
                 result.device_crashed,
             )
+            is_last = i == len(queue) - 1
+            if not is_last and (result.connection_dropped or result.device_crashed):
+                # Retries were exhausted (drop) or never attempted (crash),
+                # either way the channel is now dead. Reconnect before the
+                # next candidate gets a turn, so its first stage doesn't
+                # inherit this dead socket and get misreported as its own
+                # connection drop.
+                self.protocol.close()
+                self.protocol.connect()
+                device = self.protocol.hello()
 
         self.protocol.close()
         raise NoViableAttackError(
             f"all {len(queue)} compatible attack(s) failed for device {device!r}"
         )
 
-    def _run_with_retries(self, attack: Attack, device) -> AttackResult:
+    def _run_with_retries(self, attack: Attack, device: DeviceState) -> tuple[AttackResult, DeviceState]:
+        """
+        Returns the attack's result AND the device state from whichever
+        connection actually produced it - a reconnect mid-retry re-runs
+        hello(), so the caller needs that refreshed state.
+        """
         context = AttackContext(protocol=self.protocol, device=device)
         attempt = 0
         result = attack.run(context)
-        # `and not result.device_crashed` is redundant given how AttackResult
-        # is constructed (Attack.run() never sets both flags at once) -- kept
-        # explicit anyway because "never retry a crash" is the actual policy
-        # this loop exists to enforce, not just an incidental consequence of
-        # the two flags happening to be mutually exclusive today.
+        # Never retry a crash, only a dropped connection.
         while (
             result.connection_dropped
             and not result.device_crashed
@@ -113,4 +113,4 @@ class Orchestrator:
             device = self.protocol.hello()
             context = AttackContext(protocol=self.protocol, device=device)
             result = attack.run(context)
-        return result
+        return result, device

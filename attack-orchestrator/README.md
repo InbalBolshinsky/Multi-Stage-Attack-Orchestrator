@@ -166,6 +166,18 @@ warrant different handling:
   catching `ConnectionDropped` broadly can accidentally catch a crash too
   and apply the wrong policy to it.
 
+Falling through to the next attack in the queue always starts that attack
+on a known-good connection. A crash or an exhausted run of drop-retries
+both leave the socket dead, so before handing the next candidate its turn,
+`Orchestrator.run()` reconnects proactively (skipped if there's no next
+candidate to give a fair shot to, or if the connection is still alive,
+e.g. an ordinary stage-logic failure). Without this, the next attack's own
+first stage-send would discover the dead socket itself and get its
+*own* connection drop reported against it — misattributing the previous
+attack's dead connection as a fresh failure of an attack that was never
+actually tried, and in the worst case (a tight retry budget) burning that
+attack's retries on a phantom drop instead of a real attempt.
+
 If the queue of compatible attacks is exhausted without success (whether
 by logic failures, crashes, or connection retries running out), `run()`
 raises `NoViableAttackError` with a full audit trail available on
@@ -210,7 +222,16 @@ Two decisions worth calling out:
   originally closed the connection on every exit path including success,
   handing back a `Session` wired to a dead socket — invisible to any
   mock-based test, immediately visible once a real successful run tried to
-  actually read a file afterward.
+  actually read a file afterward. It also caught a second one the same
+  way: falling through to a fallback attack after a persistent
+  `--drop-stage` reused the previous attack's now-dead socket, so the
+  fallback attack's first stage misreported a connection drop against
+  itself — with a tight retry budget, that phantom drop could exhaust the
+  fallback attack's retries and fail the whole run even though the
+  fallback attack was fully viable. Fixed by reconnecting before handing
+  the next candidate its turn (see the README's failure-handling section
+  above); `test_next_attack_gets_a_fresh_connection_after_retries_exhausted`
+  in `test_integration_tcp.py` is the regression test.
 
 Scenarios covered: clean success; stage-failure fallback to a second
 compatible attack; exhaustion when no attack is compatible; exhaustion when

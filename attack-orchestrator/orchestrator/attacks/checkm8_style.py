@@ -1,37 +1,26 @@
 from ..attack import Attack
 from ..stage import Stage
 
-# Hardware generations vulnerable to the unpatchable checkm8 bootrom exploit.
-# Shared with CheckrainStyleAttack (checkrain_style.py) since it's literally
-# the same underlying bootrom exploit, just packaged into a full jailbreak
-# rather than a bare DFU ramdisk mount -- checkrain's own supported-device
-# list is a *subset* of this, not identical to it (see checkrain_style.py),
-# which is true to the real-world tool.
+# Hardware vulnerable to the checkm8 bootrom exploit. Shared with
+# CheckrainStyleAttack, whose supported-device list is a subset of this.
 BOOTROM_VULNERABLE_MODELS = frozenset({"iPhone8,1", "iPhone8,2", "iPhone10,1", "iPhone10,4", "iPhone12,1"})
 
 
 class Checkm8StyleAttack(Attack):
     """
-    Bootrom-level exploit, modeled on the real-world pattern where an
-    unpatchable bootrom vulnerability makes an exploit apply "regardless of
-    patch level" but only to specific hardware generations. Because it
-    doesn't rely on booting the installed OS, it can afford a much lower
-    battery threshold than an approach that needs the device fully running.
-
-    Also doesn't care whether the device is AFU or BFU (no `requires_afu`/
-    `requires_bfu`) -- entering DFU mode and exploiting the bootrom happens
-    below the OS entirely, before first-unlock state would matter. This is
-    in fact the attack's real practical edge: it's usable on a freshly
-    booted, never-unlocked device that agent_style.py can't touch.
+    Bootrom-level exploit: an unpatchable vulnerability that works
+    regardless of iOS patch level, but only on specific hardware. Runs
+    below the OS entirely (DFU mode), so it needs very little battery and
+    doesn't care whether the device is AFU or BFU.
     """
 
     attack_id = "checkm8_style"
     name = "Bootrom-level exploit"
 
     compatible_models = BOOTROM_VULNERABLE_MODELS
-    min_ios = None      # unpatchable at the bootrom -- applies across iOS versions
-    max_ios = "15.7"    # ...within the range this exploit was actually written for
-    min_battery = 10    # DFU-mode-style entry needs very little charge
+    min_ios = None      # unpatchable, so no iOS floor
+    max_ios = "15.7"    # exploit doesn't apply past this version
+    min_battery = 10    # DFU entry needs very little charge
 
     def __init__(self) -> None:
         super().__init__(

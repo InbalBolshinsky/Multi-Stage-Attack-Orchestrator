@@ -41,7 +41,7 @@ class TestExtractAll:
 
     def test_partial_failure_does_not_lose_successful_files(self):
         """
-        One unreadable path shouldn't discard everything else -- extraction
+        One unreadable path shouldn't discard everything else - extraction
         is per-file best-effort, not all-or-nothing (see README).
         """
         session, proto = make_session(files={"/a": b"1", "/b": b"2"})
@@ -54,11 +54,8 @@ class TestExtractAll:
 
 class TestExtractionAbort:
     """
-    A connection drop or device crash mid-extraction is a transport-level
-    failure, not a verdict on whichever path was in flight -- it means
-    every path after it is unreachable too. This must be reported once via
-    `.aborted`, not misattributed to each remaining path as if they had
-    individually failed (see session.py's module docstring).
+    A connection drop or crash mid-extraction means every remaining path
+    is unreachable too. Reported once via `.aborted` (see session.py).
     """
 
     def test_connection_drop_stops_extraction_and_keeps_prior_successes(self):
@@ -88,7 +85,7 @@ class TestExtractionAbort:
         assert result.aborted is None
 
     def test_extract_all_aborts_cleanly_if_listing_itself_drops(self):
-        # the drop happens before any file is read -- extract_all() must
+        # the drop happens before any file is read - extract_all() must
         # still return an ExtractionResult (with .aborted set), not raise
         session, _ = make_session(files={"/a": b"1"}, drop_on_list=True)
         result = session.extract_all()

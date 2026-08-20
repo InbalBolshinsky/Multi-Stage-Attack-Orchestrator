@@ -5,35 +5,20 @@ from .checkm8_style import BOOTROM_VULNERABLE_MODELS
 
 class CheckrainStyleAttack(Attack):
     """
-    Semi-tethered jailbreak built on top of the checkm8 bootrom exploit,
-    modeled on the real-world checkra1n: same unpatchable bootrom entry
-    point as Checkm8StyleAttack, but it doesn't stop at mounting a ramdisk
-    -- it boots a patched kernel and installs a package manager (Cydia) to
-    get a full userland jailbreak.
+    A jailbreak similar to checkra1n: uses the same bootrom exploit as
+    checkm8, then installs Cydia to fully jailbreak the device.
 
-    That's reflected in three ways relative to Checkm8StyleAttack:
-    - `compatible_models` is a *subset* of the checkm8-vulnerable hardware,
-      not the full set -- checkra1n's real officially-supported device list
-      was narrower than every bootrom-exploitable chip.
-    - `min_battery` is higher -- it needs to boot the device far enough to
-      install userland software, not just mount a read-only ramdisk.
-    - two extra stages lower its `estimated_success_probability` below
-      Checkm8StyleAttack's, even sharing the same first-stage odds --
-      more steps, more places to fail, which is why the selector still
-      prefers the plain bootrom exploit when both are compatible and the
-      caller only needs file read access, not a full jailbreak.
-
-    Same bootrom entry point as Checkm8StyleAttack, so it's likewise
-    unconstrained on AFU/BFU state (see that class's docstring).
+    This all happens before the device's own operating system starts, so
+    it works whether or not the device has been unlocked since boot.
     """
 
     attack_id = "checkrain_style"
     name = "Checkra1n-style semi-tethered jailbreak"
 
-    compatible_models = frozenset({"iPhone10,1", "iPhone10,4"})
-    min_ios = None       # bootrom entry point is unpatchable, same as checkm8
-    max_ios = "14.8"     # checkra1n never gained solid support past this
-    min_battery = 15     # boots further into userland than a bare ramdisk mount
+    compatible_models = BOOTROM_VULNERABLE_MODELS & frozenset({"iPhone10,1", "iPhone10,4"})
+    min_ios = None       # the exploit can't be patched
+    max_ios = "14.8"     # checkra1n doesn't have solid support past this
+    min_battery = 15     # needs enough charge to fully start up the device
 
     def __init__(self) -> None:
         super().__init__(

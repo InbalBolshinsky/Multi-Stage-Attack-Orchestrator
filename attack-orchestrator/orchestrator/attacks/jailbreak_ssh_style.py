@@ -4,20 +4,14 @@ from ..stage import Stage
 
 class JailbreakSSHStyleAttack(Attack):
     """
-    Piggybacks on a jailbreak the device already has (e.g. from a prior
-    checkra1n/unc0ver run), modeled on the real-world pattern where a
-    forensic tool doesn't run its own exploit chain against an
-    already-jailbroken device -- it just uses the SSH/filesystem access
-    the jailbreak already exposes. That's why this attack is compatible
-    only when `device.jailbroken` is set, has no model/iOS bounds (a
-    jailbreak already did the hard, hardware/version-specific part), and
-    has by far the highest estimated_success_probability of any example
-    attack here: the exploit work is already done, this is just "connect
-    and read."
+    Uses a jailbreak the device already has (e.g. from a prior
+    checkra1n run) to connect over SSH, instead of running a new
+    exploit chain. Only compatible when the device is already jailbroken -
+    no model/iOS bounds needed, since that hard work is already done.
 
-    Not a substitute for checkm8_style/agent_style -- it's compatible on a
-    strictly narrower slice of devices (only ones already jailbroken), so
-    it competes for ranking rather than replacing the others in the queue.
+    Doesn't replace checkm8_style/agent_style - it only applies to a
+    narrower slice of devices (already jailbroken ones), so it just
+    competes for ranking.
     """
 
     attack_id = "jailbreak_ssh_style"

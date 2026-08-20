@@ -1,24 +1,18 @@
 """
 Protocol: the Bridge between "what an attack/stage needs to do" and "how
-that actually gets done on the wire."
+that actually gets done on the wire" (see README "Why Bridge").
 
-Stages and Attacks only ever depend on this interface. They never know or
-care whether they're talking to a real TCP connection (Part 2, TCPProtocol)
-or an in-memory fake (Part 1 tests, FakeProtocol). That's the whole point of
-pulling this out as its own abstraction rather than letting each Attack
-implement its own communication -- see README "Why Bridge" for the reasoning
-that led here.
+Stages and Attacks only depend on this interface - they never know or care
+whether they're talking to a real TCP connection (TCPProtocol) or an
+in-memory fake (FakeProtocol, used in unit tests).
 
-Deliberately a *high-level* interface (hello / run_stage / read_file), not a
-thin wrapper around raw socket bytes. Stages should reason in terms of
-device operations, not wire format -- the wire format is TCPProtocol's
-private concern (see PROTOCOL.md for the actual length-prefixed framing it
-speaks).
+It's a high-level interface (hello / run_stage / read_file).
+Stages reason in terms of device operations;
+the wire format itself is TCPProtocol's own concern.
 """
 
 from __future__ import annotations
 
-import base64
 import random
 import socket
 from abc import ABC, abstractmethod
@@ -46,10 +40,8 @@ class Protocol(ABC):
 
         Returns True/False for success/failure. Raises ConnectionDropped if
         the channel dies before a response arrives, or DeviceCrashed if the
-        device explicitly reports (before the channel dies) that this stage
-        crashed it -- callers must not conflate "stage failed" with
-        "connection dropped" with "device crashed"; each gets different
-        handling (see README).
+        device reports the stage crashed it. Each case gets different
+        handling upstream (see README), so callers must not conflate them.
         """
 
     @abstractmethod
@@ -77,10 +69,9 @@ class Protocol(ABC):
 
 
 # ---------------------------------------------------------------------------
-# FakeProtocol -- in-memory implementation for Part 1 unit tests.
-# No sockets, no C process. Configure exactly which stages fail / drop the
-# connection / which files exist, and test the framework's decision-making
-# in complete isolation from Part 2.
+# FakeProtocol - in-memory implementation for unit tests.
+# Configure which stages fail/drop the connection and which files
+# exist, to test the framework's decision-making in isolation.
 # ---------------------------------------------------------------------------
 
 
@@ -122,10 +113,8 @@ class FakeProtocol(Protocol):
         if not self._connected:
             raise ProtocolError("run_stage called before connect()")
         if self.crash_at_stage == stage_id:
-            # Deliberately does NOT touch _connected: unlike drop_at_stage,
-            # a crash isn't modeling transport death here, just the
-            # protocol-level signal a real device would send before the
-            # socket happens to close -- see DeviceCrashed's docstring.
+            # Unlike drop_at_stage, a crash doesn't mean the transport died -
+            # it's the device reporting a crash before the connection closes.
             raise DeviceCrashed(f"device crashed at stage {stage_id}")
         if self.drop_at_stage == stage_id:
             self._connected = False
@@ -165,14 +154,12 @@ class FakeProtocol(Protocol):
 
 
 # ---------------------------------------------------------------------------
-# TCPProtocol -- Part 2 implementation. Speaks the length-prefixed protocol
-# documented in PROTOCOL.md to the C simulator (or, unmodified, to a real
-# device that spoke the same protocol).
+# TCPProtocol - speaks the length-prefixed protocol documented in
+# README.md to the C simulator.
 #
-# Every message either direction is one frame: a 4-byte big-endian length,
-# then exactly that many payload bytes. Framing never depends on scanning
-# for a delimiter, so payload content -- including READ's file bytes --
-# can safely contain '\n' or anything else.
+# Every message is one frame: a 4-byte length prefix, then that many
+# payload bytes. Framing never depends on scanning for a delimiter, so
+# payload content can safely contain '\n' or anything else.
 # ---------------------------------------------------------------------------
 
 MAX_FRAME_BYTES = 64 * 1024  # sanity bound on a declared frame length; matches simulator.c's MAX_FRAME
@@ -233,24 +220,35 @@ class TCPProtocol(Protocol):
 
     def hello(self) -> DeviceState:
         self._send_frame(b"HELLO")
-        reply = self._read_frame().decode("utf-8")
+        reply = _decode(self._read_frame())
         fields = _parse_kv_reply(reply, expect_prefix="OK HELLO")
+        # model/ios/battery/locked are required by every is_compatible()
+        # check, so a missing/malformed value is a ProtocolError.
+        # afu/jailbroken fall back to DeviceState's own defaults, 
+        # so older simulators without those fields still work.
+        try:
+            model = fields["model"]
+            ios_version = fields["ios"]
+            battery = int(fields["battery"])
+            locked = fields["locked"] == "1"
+        except KeyError as exc:
+            raise ProtocolError(f"HELLO reply missing required field {exc}: {reply!r}") from exc
+        except ValueError as exc:
+            raise ProtocolError(f"HELLO reply had a non-numeric battery: {reply!r}") from exc
         return DeviceState.from_wire(
-            model=fields["model"],
-            ios_version=fields["ios"],
-            battery=int(fields["battery"]),
-            locked=fields["locked"] == "1",
-            after_first_unlock=fields["afu"] == "1",
-            jailbroken=fields["jailbroken"] == "1",
+            model=model,
+            ios_version=ios_version,
+            battery=battery,
+            locked=locked,
+            after_first_unlock=fields.get("afu", "1") == "1",
+            jailbroken=fields.get("jailbroken", "0") == "1",
         )
 
     def run_stage(self, stage_id: int) -> bool:
         self._send_frame(f"STAGE {stage_id}".encode("utf-8"))
-        reply = self._read_frame().decode("utf-8")  # raises ConnectionDropped if the sim closed on us
-        # A crash means the read itself SUCCEEDS -- the device answers
-        # before its connection dies -- unlike a silent drop, where this
-        # _read_frame() call above is the thing that fails. That's the
-        # actual distinguishing signal between the two failure modes.
+        reply = _decode(self._read_frame())  # raises ConnectionDropped if the sim closes
+        # A crash means the read succeeds - the device answers before its
+        # connection dies, while a silent drop fails the read above instead.
         if reply.startswith("ERR CRASH"):
             raise DeviceCrashed(f"device crashed during stage {stage_id}")
         parts = reply.split()
@@ -260,7 +258,7 @@ class TCPProtocol(Protocol):
 
     def unlock(self) -> None:
         self._send_frame(b"UNLOCK")
-        reply = self._read_frame().decode("utf-8")
+        reply = _decode(self._read_frame())
         if not reply.startswith("OK UNLOCK"):
             raise ProtocolError(f"unexpected reply to UNLOCK: {reply!r}")
 
@@ -271,17 +269,14 @@ class TCPProtocol(Protocol):
             raise DeviceLockedError(path)
         if payload.startswith(b"ERR NOTFOUND"):
             raise FileNotFoundOnDevice(path)
-        # Header text, one embedded '\n', then raw content -- split on the
-        # FIRST '\n' only and take the rest by length, not by scanning for
-        # another delimiter, so embedded '\n' bytes in content are safe.
+        # Header text -> '\n' -> raw content. Split on the first '\n'
+        # only; content is taken by length so embedded '\n' bytes are safe.
         header, sep, content = payload.partition(b"\n")
         if not sep:
             raise ProtocolError(f"unexpected reply to READ {path}: {payload!r}")
-        header_text = header.decode("utf-8")
-        # Split from the right for the length: `path` may itself contain
-        # spaces (see simulator.c's sscanf, which captures it verbatim), so
-        # parts[2] isn't reliably "the path" -- but the length is always
-        # the last whitespace-separated token, since it's a plain integer.
+        header_text = _decode(header)
+        # `path` may itself contain spaces, so we can't assume parts[2] is
+        # the path, but the length is always the last token.
         parts = header_text.split()
         if len(parts) < 3 or parts[0] != "OK" or parts[1] != "READ":
             raise ProtocolError(f"unexpected reply to READ {path}: {header_text!r}")
@@ -300,12 +295,24 @@ class TCPProtocol(Protocol):
         payload = self._read_frame()
         if payload.startswith(b"ERR LOCKED"):
             raise DeviceLockedError("cannot list files: device is locked")
-        lines = payload.decode("utf-8").split("\n")
+        lines = _decode(payload).split("\n")
         parts = lines[0].split()
         if len(parts) != 3 or parts[0] != "OK" or parts[1] != "LIST":
             raise ProtocolError(f"unexpected reply to LIST: {lines[0]!r}")
-        n = int(parts[2])
+        try:
+            n = int(parts[2])
+        except ValueError as exc:
+            raise ProtocolError(f"unexpected reply to LIST: {lines[0]!r}") from exc
         return lines[1 : 1 + n]
+
+
+def _decode(payload: bytes) -> str:
+    """Decodes a reply, turning invalid UTF-8 into a ProtocolError instead
+    of a raw crash."""
+    try:
+        return payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ProtocolError(f"reply was not valid utf-8: {payload!r}") from exc
 
 
 def _parse_kv_reply(reply: str, expect_prefix: str) -> dict[str, str]:

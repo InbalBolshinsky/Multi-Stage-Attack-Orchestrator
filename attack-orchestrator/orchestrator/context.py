@@ -2,16 +2,14 @@
 AttackContext: what gets passed to Stage.run(), instead of a bare Protocol.
 
 Built once per attack attempt and threaded through every stage in the
-chain. Bundles:
+chain. Includes:
   - protocol: the Bridge implementation actually talking to the device
   - device: the DeviceState snapshot from before this attempt started
-  - scratch: a shared dict stages can use to pass data forward (e.g. stage 1
-    discovers an offset or token that stage 3 needs) without stages knowing
-    about each other directly
+  - scratch: a shared dict for passing data between stages. Unused by the
+    current example attacks, but available for a future stage that needs it
 
-This is the "second option" from planning: stages depend on one stable
-context object, not directly on Protocol, which keeps every Stage
-implementation insulated from how the attack composes them together.
+Stages depend on this one stable object instead of on Protocol directly,
+so a Stage never needs to know how the attack composes them together.
 """
 
 from __future__ import annotations

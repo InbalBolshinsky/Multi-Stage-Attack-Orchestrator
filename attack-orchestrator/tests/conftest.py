@@ -15,7 +15,7 @@ SIMULATOR_BIN = Path(__file__).resolve().parent.parent / "simulator" / "simulato
 
 @pytest.fixture
 def selector() -> AttackSelector:
-    """Fresh selector with all three example attacks registered."""
+    """Fresh selector with all four example attacks registered."""
     return AttackSelector(all_attacks())
 
 
@@ -56,11 +56,9 @@ def _wait_for_port(port: int, timeout: float = 2.0) -> None:
 @pytest.fixture
 def spawn_simulator(tmp_path):
     """
-    Factory fixture: spawn_simulator(**cli_flags) -> SimulatorHandle.
-
-    Starts the real compiled C simulator as a subprocess on a free port and
-    waits for it to accept connections, so integration tests talk to the
-    actual Part 2 binary over actual TCP -- not a mock.
+    Call spawn_simulator(**cli_flags) to start a real simulator process
+    and get back a SimulatorHandle once it's ready. Used by tests that
+    need a real connection instead of the in-memory fake.
     """
     if not SIMULATOR_BIN.exists():
         pytest.skip(f"simulator binary not built at {SIMULATOR_BIN} (run `make` in simulator/)")

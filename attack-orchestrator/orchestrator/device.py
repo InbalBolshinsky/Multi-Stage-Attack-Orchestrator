@@ -1,33 +1,14 @@
 """
 DeviceState: the snapshot of device attributes attacks check themselves
-against before running.
+against before running (see README "Device state fields" for the full
+reasoning behind each one):
 
-Field choice is grounded in how real mobile-forensic tooling gates exploits
-(see README "Device state fields" for sources/reasoning) rather than picked
-arbitrarily:
-
-- model / chipset generation: exploits target specific hardware generations
-- ios_version: point releases matter, not just major version (an exploit
-  patched in 16.0 may still work on 15.7)
-- battery: insufficient charge is a real, commonly-cited reason a low-level
-  attack attempt can't even be started
-- locked: whether the device currently requires unlocking at all
-- after_first_unlock: whether the passcode has been entered at least once
-  since the device's last boot (mobile-forensics terms: AFU vs. BFU). This
-  is independent of `locked` -- a device can be AFU but currently
-  re-locked at the lock screen. It matters because some extraction paths
-  depend on state that only exists once a device has been unlocked at
-  least once since boot (e.g. certain keychain/pairing material), while a
-  bootrom-level exploit doesn't care either way -- see agent_style.py vs.
-  checkm8_style.py.
-- jailbroken: whether the device already has a working jailbreak (e.g. a
-  prior checkra1n/unc0ver run) exposing direct filesystem access, such as
-  SSH. Independent of `locked` for the same reason a real jailbreak's SSH
-  daemon is typically installed to run persistently and doesn't wait for
-  the lock screen to be dismissed. Grounded in how real forensic tooling
-  (Cellebrite et al.) treats an already-jailbroken device as its own
-  distinct, much higher-odds extraction path rather than running its
-  normal exploit chain against it -- see jailbreak_ssh_style.py.
+- model: hardware generation
+- ios_version: OS version, down to the point release
+- battery: charge level
+- locked: whether the device currently needs unlocking
+- after_first_unlock: passcode entered since last boot (AFU vs. BFU)
+- jailbroken: whether the device already has a working jailbreak
 """
 
 from __future__ import annotations
@@ -43,7 +24,7 @@ class IOSVersion:
     Comparable representation of an iOS version string like "15.7" or "14.4.1".
 
     A plain string comparison would sort "9.0" after "15.0" lexicographically,
-    which is wrong -- version comparisons need numeric tuple comparison.
+    so versions are compared as tuples of numbers instead.
     """
 
     raw: str
@@ -85,8 +66,8 @@ class DeviceState:
     ios_version: IOSVersion
     battery: int  # 0-100
     locked: bool
-    after_first_unlock: bool = True  # AFU by default -- BFU is the rarer, opt-in case
-    jailbroken: bool = False  # stock by default -- an existing jailbreak is the opt-in case
+    after_first_unlock: bool = True  # AFU by default - BFU is the rarer
+    jailbroken: bool = False  # stock by default - an existing jailbreak is the unusual case
 
     @classmethod
     def from_wire(

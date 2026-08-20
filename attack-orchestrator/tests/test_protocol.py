@@ -1,8 +1,8 @@
 """
 Unit tests for TCPProtocol's wire-parsing logic, isolated from any real
-socket by monkeypatching the frame-level send/receive helpers. These don't
-need the compiled simulator -- they exercise what TCPProtocol does with a
-given (possibly malformed) frame, independent of who sent it.
+socket by replacing the frame-level send/receive helpers with stubs.
+These don't need the compiled simulator - they exercise what TCPProtocol
+does with a given (possibly malformed) frame, independent of who sent it.
 """
 
 import pytest
@@ -36,18 +36,16 @@ class TestReadFileLengthValidation:
 
     def test_length_is_read_from_the_last_token_not_the_third(self):
         # a path containing spaces pushes the length further right in the
-        # whitespace-split header -- parts[-1], not parts[2], is the length
+        # whitespace-split header: parts[-1], not parts[2], is the length
         proto = make_protocol(b"OK READ /var/mobile/My File.db 5\nhello")
         assert proto.read_file("/var/mobile/My File.db") == b"hello"
 
 
 class TestHelloFieldValidation:
     """
-    hello() feeds every attack's is_compatible() check -- a wire reply that's
-    missing a field, has a non-numeric value, or isn't valid UTF-8 at all
-    (e.g. from a slightly different simulator a reviewer plugs in) must
-    surface as a ProtocolError, the same way read_file()'s malformed-length
-    cases do above, not as a raw KeyError/ValueError/UnicodeDecodeError.
+    hello() feeds every attack's is_compatible() check, so a malformed or
+    non-UTF-8 reply must surface as a ProtocolError -- not a raw
+    KeyError/ValueError/UnicodeDecodeError.
     """
 
     def test_accepts_full_reply(self):
@@ -62,8 +60,7 @@ class TestHelloFieldValidation:
         assert device.jailbroken is False
 
     def test_defaults_afu_and_jailbroken_when_omitted(self):
-        # a simulator that predates the afu/jailbroken flags should still
-        # work, picking up the same defaults DeviceState itself uses
+        # an older simulator without afu/jailbroken fields should still work
         proto = make_protocol(b"OK HELLO model=iPhone8,1 ios=14.4 battery=60 locked=1")
         device = proto.hello()
         assert device.after_first_unlock is True
@@ -73,8 +70,8 @@ class TestHelloFieldValidation:
         "reply",
         [
             b"OK HELLO ios=14.4 battery=60 locked=1",  # missing model=
-            b"OK HELLO model=iPhone8,1 ios=14.4 battery=full locked=1",  # non-numeric battery
-            b"\xff\xfe not utf-8",  # not valid utf-8 at all
+            b"OK HELLO model=iPhone8,1 ios=14.4 battery=full locked=1",
+            b"\xff\xfe not utf-8",
         ],
         ids=["missing_required_field", "non_numeric_battery", "invalid_utf8"],
     )

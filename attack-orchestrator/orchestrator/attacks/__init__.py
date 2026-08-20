@@ -1,13 +1,7 @@
 """
 Four example attacks, modeled loosely on real-world families discussed in
-planning (see README): a bootrom-level exploit that targets older hardware
-regardless of iOS patch level, a full jailbreak built on that same bootrom
-exploit for a narrower device subset, an agent-based approach for newer
-devices that requires more battery/user-trust steps, and piggybacking on a
-jailbreak the device already has going in.
-
-These exist to exercise the framework end-to-end - they are illustrative,
-not meant to represent real exploit internals.
+planning (see README).
+These exist to exercise the framework end-to-end.
 """
 
 from ..stage import Stage
@@ -28,5 +22,5 @@ __all__ = [
 
 def all_attacks() -> list:
     """Convenience factory returning one instance of each known attack,
-    ready to register with an AttackSelector."""
+    ready to hand to AttackSelector."""
     return [Checkm8StyleAttack(), CheckrainStyleAttack(), AgentStyleAttack(), JailbreakSSHStyleAttack()]

@@ -1,10 +1,9 @@
 """
-Exception hierarchy.
+This is an exception hierarchy.
 
-Kept flat and specific rather than reusing generic exceptions, because the
-orchestrator's control flow (retry vs. abort vs. fall back to the next
-attack, see README "Stage failure handling") depends on distinguishing
-*why* something failed, not just that it did.
+Each error is specific on purpose, instead of reusing generic exceptions:
+the orchestrator's retry/abort/fallback logic (see README) depends on
+knowing WHY something failed, not just that it did.
 """
 
 
@@ -14,38 +13,27 @@ class OrchestratorError(Exception):
 
 class ConnectionDropped(OrchestratorError):
     """
-    The connection to the device died mid-conversation (e.g. mid-chain).
+    The connection to the device died mid-conversation.
 
-    This is deliberately distinct from a stage reporting failure: a dropped
-    connection is a transport-layer/environmental problem, not a signal that
-    the exploit itself doesn't apply to this device. See README section on
-    retry-vs-fallback for why that distinction drives different handling.
+    Not a stage failure but a transport problem, not a verdict on whether
+    the exploit works (see README).
     """
 
 
 class DeviceCrashed(OrchestratorError):
     """
-    The device explicitly reported that it crashed as a result of the
-    stage just run, before the connection closed.
+    The device reported a crash caused by the stage just run, before the
+    connection closed.
 
-    Deliberately a *sibling* of ConnectionDropped, not a subclass. The two
-    look similar at the socket level (the connection ends up dead either
-    way) but mean opposite things for retry policy: a plain drop is
-    transport-layer noise unrelated to the exploit, so it's worth
-    reconnecting and retrying the same attack; a crash is a verdict on the
-    exploit itself -- this stage broke the device -- so retrying it again
-    isn't expected to end differently, same as an ordinary stage-logic
-    failure. Making DeviceCrashed a subclass of ConnectionDropped would let
-    any `except ConnectionDropped` handler silently catch crashes too and
-    apply the reconnect-and-retry policy to them by accident; keeping them
-    as siblings forces every catch site to decide on purpose which failure
-    mode it's handling.
+    A sibling of ConnectionDropped, not a subclass: a drop is worth
+    retrying, a crash isn't. Keeping them separate stops one from ever
+    being handled as if it were the other.
     """
 
 
 class DeviceLockedError(OrchestratorError):
-    """Attempted a locked-only operation (e.g. read_file) before any
-    attack chain completed successfully."""
+    """Tried a locked-only operation (e.g. read_file) before any attack
+    chain unlocked the device."""
 
 
 class FileNotFoundOnDevice(OrchestratorError):
@@ -58,5 +46,5 @@ class NoViableAttackError(OrchestratorError):
 
 
 class ProtocolError(OrchestratorError):
-    """The device sent something the protocol layer couldn't parse, or
-    responded with an error we don't have a more specific exception for."""
+    """The device sent a reply the protocol layer couldn't parse, or an
+    error with no more specific exception."""

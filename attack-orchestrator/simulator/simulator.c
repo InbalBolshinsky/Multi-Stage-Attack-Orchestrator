@@ -1,23 +1,16 @@
 /*
  * Device simulator.
  *
- * Speaks a small length-prefixed text-payload protocol over TCP (see
- * PROTOCOL.md) and stands in for a real mobile device: it exposes device
- * info, "runs" attack stages with configurable success/failure, and once
- * "unlocked" serves reads from a tiny in-memory filesystem. It can also
- * simulate two distinct failure modes the orchestrator has to handle
- * differently: a connection that drops mid-chain with no explanation
- * (--drop-stage), and a device that explicitly reports a crash before the
- * connection dies (--crash-stage).
+ * Stands in for a real mobile device over TCP: reports device info, "runs"
+ * attack stages with configurable success/failure, and once "unlocked"
+ * serves reads from a small in-memory filesystem. Can also simulate a
+ * silent connection drop (--drop-stage) or a device crash (--crash-stage).
  *
- * Every message (either direction) is [4-byte big-endian length][payload].
- * The length prefix means framing never depends on scanning for a
- * delimiter byte, so payload content -- including READ's file bytes -- can
- * safely contain '\n' or anything else.
+ * Every message is [4-byte length][payload], so payload content (like a
+ * file's bytes) can safely contain '\n' or anything else.
  *
- * One client is served at a time (accept -> handle to completion -> accept
- * next). That's enough for an orchestrator that runs one attack at a time,
- * and it keeps the state machine trivial to reason about.
+ * Handles one client at a time, which is all an orchestrator running one
+ * attack at a time needs.
  */
 
 //Includes and constants:
@@ -34,19 +27,17 @@
 #include <arpa/inet.h>
 
 #define MAX_LINE 4096 // One page memory round arbitrary number
-#define MAX_FAIL_STAGES 64 // Big enaugh number for 3-6 flags (e.g. "--fail-stage")
-/* Sanity bound on an incoming frame's declared length -- this is a wire
- * boundary (untrusted input), so we bound it rather than trusting a
- * 4-byte length prefix to malloc() whatever it claims. Real payloads here
- * (device info, one fake file's placeholder bytes, a short file list) are
- * at most a few hundred bytes, so 64 KiB is already generous headroom. */
+#define MAX_FAIL_STAGES 64 // A big enough number for 3-6 flags (e.g. "--fail-stage")
+/* Sanity bound on an incoming frame's declared length. This is untrusted
+ * input, so we bound it instead of trusting the 4-byte length prefix to
+ * malloc() whatever it claims. Real payloads here are at most a few
+ * hundred bytes, so 64 KiB is already generous headroom. */
 #define MAX_FRAME (64 * 1024)
 
 /* command[]/arg[] in handle_connection are parsed with sscanf field
  * widths that must leave room for the NUL terminator. Building the
- * format string from these macros (via STRINGIFY) plus the
- * _Static_assert below keeps the width and the buffer size from
- * silently drifting apart if either one is ever changed alone. */
+ * format string from these macros, checked by the _Static_assert below,
+ * keeps the width and buffer size from silently drifting apart. */
 #define COMMAND_BUF_SIZE 32
 #define COMMAND_SCAN_WIDTH 31
 #define ARG_SCAN_WIDTH 4000
@@ -64,10 +55,9 @@ typedef struct {
     const char *content;
 } FakeFile;
 
-/* Default fake filesystem. Kept intentionally small and readable. g_files
- * is sized exactly to its initializer, and g_file_count is derived from
- * that size, so adding/removing an entry here can never drift out of
- * sync with the count the way a hand-typed number could. */
+/* Default fake filesystem, kept small and readable. g_file_count is
+ * derived from g_files' size, so it can't drift out of sync when an
+ * entry is added or removed. */
 static FakeFile g_files[] = {
     {"/var/mobile/Library/db/contacts.db", "CONTACTS_DB_BINARY_BLOB_PLACEHOLDER"},
     {"/var/mobile/Library/db/messages.db", "MESSAGES_DB_BINARY_BLOB_PLACEHOLDER"},
@@ -77,7 +67,7 @@ static FakeFile g_files[] = {
 };
 static const int g_file_count = (int)(sizeof(g_files) / sizeof(g_files[0]));
 
-// Decvice state
+// Device state
 typedef struct {
     char model[64];
     char ios_version[16];
@@ -109,11 +99,9 @@ static const char *find_file_content(const char *path) {
 }
 
 // Reading and writing the bytes:
-/* Reads exactly n bytes into buf, looping over short reads (a single
- * recv() is never guaranteed to fill the buffer). Returns n on success, 0
- * on clean EOF before any byte of this call was read (a clean close
- * between frames), -1 on error or an EOF mid-read (a partial frame --
- * treated the same as a dropped connection either way). */
+/* Reads exactly n bytes into buf, looping over short reads. Returns n on
+ * success, 0 on a clean close between frames, -1 on error or a partial
+ * frame (both treated as a dropped connection). */
 static ssize_t read_exact(int fd, void *buf, size_t len) {
     size_t bytes_read = 0;
     while (bytes_read < len) {
@@ -144,7 +132,6 @@ static int write_exact(int fd, const void *buf, size_t len) {
 }
 
 // Sending the frame:
-/* Sends one length-prefixed frame: 4-byte big-endian length, then payload. */
 static int send_frame(int fd, const void *payload, size_t len) {
     uint32_t len_be = htonl((uint32_t)len);
     if (write_exact(fd, &len_be, sizeof(len_be)) < 0) return -1;
@@ -152,7 +139,7 @@ static int send_frame(int fd, const void *payload, size_t len) {
     return 0;
 }
 
-/* Formats a text payload and sends it as one frame. No trailing '\n' --
+/* Formats a text payload and sends it as one frame. No trailing '\n',
  * that was only needed for the old line-delimited framing. */
 static void send_textf(int fd, const char *fmt, ...) {
     char buf[MAX_LINE];
@@ -166,16 +153,13 @@ static void send_textf(int fd, const char *fmt, ...) {
 }
 
 
-// Reading the farme:
+// Reading the frame:
 /* Reads one length-prefixed frame into a heap buffer the caller must
- * free(). *out_payload is NUL-terminated for convenience parsing text
- * commands, in addition to the returned exact length. Returns positive
- * payload length on success, 0 for a clean close at a frame boundary
- * (equivalent to the old EOF-with-nothing-read case), -1 on error, an
- * oversized declared length, a partial frame, or a zero-length frame (no
- * real command is ever empty, so treat it the same as a malformed one --
- * this also means *out_payload is only ever set on the >0 return path,
- * so the caller always has exactly one buffer to free). */
+ * free(). *out_payload is NUL-terminated for easy text parsing. Returns
+ * the payload length on success, 0 on a clean close at a frame boundary,
+ * -1 on error, an oversized length, a partial frame, or a zero-length
+ * frame (no real command is ever empty). *out_payload is only set on the
+ * >0 path, so the caller always has exactly one buffer to free. */
 static ssize_t read_frame(int fd, char **out_payload) {
     uint32_t len_be;
     ssize_t header_result = read_exact(fd, &len_be, sizeof(len_be));
@@ -233,11 +217,9 @@ static void handle_read(int client_fd, const char *path) {
         send_textf(client_fd, "ERR NOTFOUND %s", path);
         return;
     }
-    /* Single frame: a text header, one embedded '\n', then the raw file
-     * bytes. The receiver splits on the FIRST '\n' only and takes
-     * everything else in the frame as content by length -- not by
-     * scanning for a second delimiter -- so this is safe even if content
-     * itself contains '\n' bytes. */
+    /* One frame: a text header, then '\n', then the raw file bytes.
+     * The receiver splits on the first '\n' only, then takes the rest
+     * by length. */
     size_t content_len = strlen(content);
     char header[MAX_LINE];
     int header_len = snprintf(header, sizeof(header), "OK READ %s %zu\n", path, content_len);
@@ -256,8 +238,7 @@ static void handle_list(int client_fd) {
         send_textf(client_fd, "ERR LOCKED");
         return;
     }
-    /* "OK LIST <n>\npath1\npath2\n...\npathn", one frame, no trailing '\n'
-     * (the frame length itself marks the end -- no delimiter needed). */
+    /* "OK LIST <n>\npath1\npath2\n...\npathn", one frame, no trailing '\n'. */
     char response[MAX_LINE];
     int response_len = snprintf(response, sizeof(response), "OK LIST %d", g_file_count);
     if (response_len < 0) return;
@@ -324,8 +305,8 @@ static void parse_args(int argc, char **argv) {
     strcpy(g_device.ios_version, "14.4");
     g_device.battery = 80;
     g_device.locked = 1;
-    g_device.after_first_unlock = 1; /* AFU by default -- BFU is the rarer, opt-in case */
-    g_device.jailbroken = 0;         /* stock by default -- jailbroken is the opt-in case */
+    g_device.after_first_unlock = 1; /* AFU by default (BFU is the rarer opt-in case) */
+    g_device.jailbroken = 0;         /* stock by default (jailbroken is the opt-in case) */
     g_device.fail_stage_count = 0;
     g_device.drop_at_stage = -1;
     g_device.crash_at_stage = -1;

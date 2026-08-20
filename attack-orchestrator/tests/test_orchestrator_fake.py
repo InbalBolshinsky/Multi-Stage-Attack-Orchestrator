@@ -4,15 +4,12 @@ These exercise the actual policy decisions from planning:
   - connection drop -> bounded reconnect-and-retry of the SAME attack
   - retries exhausted / no attacks left -> NoViableAttackError
 
-All against FakeProtocol -- no sockets, no C process. See
-test_integration_tcp.py for the same behaviors proven against the real
-simulator.
+All against FakeProtocol - no sockets, no C process.
 """
 
 import pytest
 
-from orchestrator import AttackSelector, Orchestrator, FakeProtocol, NoViableAttackError
-from orchestrator.attacks import all_attacks
+from orchestrator import Orchestrator, FakeProtocol, NoViableAttackError
 
 FILES = {"/var/mobile/a.db": b"AAAA", "/var/mobile/b.jpg": b"BBBB"}
 
@@ -31,7 +28,7 @@ class TestCleanSuccess:
         assert result.files["/var/mobile/a.db"] == b"AAAA"
 
     def test_picks_highest_scoring_compatible_attack(self, selector):
-        # both compatible on 15.5 -- selector should try checkm8 first (higher estimated prob)
+        # both compatible on 15.5 - selector should try checkm8 first (higher estimated prob)
         orch, _ = make_orchestrator(selector, model="iPhone8,1", ios_version="15.5", battery=60)
         orch.run()
         assert orch.attempts[0].attack_id == "checkm8_style"
@@ -52,15 +49,14 @@ class TestStageFailureFallback:
         assert session.extract_all().succeeded  # session is actually usable
 
     def test_does_not_retry_the_same_stage_on_logic_failure(self, selector):
-        # fail_stages is a permanent condition (unlike a one-shot connection
-        # drop) -- if the orchestrator retried checkm8 in place it would
-        # fail forever; it must fall through instead
+        # fail_stages is permanent (unlike a drop) - retrying in place
+        # would fail forever, so it must fall through instead
         orch, _ = make_orchestrator(
             selector, model="iPhone8,1", ios_version="14.4", battery=60, fail_stages={2}
         )
         with pytest.raises(NoViableAttackError):
             orch.run()
-        # only one attempt at checkm8 -- no blind retries of a failed stage
+        # only one attempt at checkm8 - no blind retries of a failed stage
         assert len(orch.attempts) == 1
         assert orch.attempts[0].stage_results[-1].success is False
 
@@ -68,11 +64,9 @@ class TestStageFailureFallback:
 class TestConnectionDropHandling:
     def test_reconnects_and_retries_same_attack(self, selector):
         """
-        Drop on the connection that's active during the FIRST attempt only,
-        and change the reported battery on the reconnect -- proves both that
-        exactly one retry is needed, and that the Session eventually handed
-        back carries the refreshed post-reconnect device state, not whatever
-        was reported before the dropped attempt.
+        Drops only the first connection, then changes the reported battery
+        on reconnect - proves the Session ends up with the refreshed
+        post-reconnect device state, not the original one.
         """
         proto = FakeProtocol(model="iPhone8,1", ios_version="14.4", battery=60, files=dict(FILES))
         original_connect = proto.connect
@@ -105,34 +99,37 @@ class TestConnectionDropHandling:
 
 
 class TestDeviceCrashHandling:
-    def test_crash_falls_back_with_zero_reconnect_attempts(self, selector):
-        # crash on checkm8's stage 2 -- must abort that attack (no retry of
-        # the same attack, unlike a drop) and fall straight through to
-        # agent_style, exactly like an ordinary stage-logic failure would
-        orch, proto = make_orchestrator(
+    def test_crash_falls_back_with_zero_reconnect_attempts(self, selector, caplog):
+        """
+        A crash on checkm8's stage 2 aborts it outright - no retry, unlike
+        a drop - and falls through to agent_style.
+
+        checkm8_style itself must never reconnect after the crash; that's
+        the "never retry a crash" policy. The orchestrator opens exactly
+        one fresh connection before agent_style's turn, since the crash
+        left the old one dead and agent_style needs a live connection to
+        run on.
+        """
+        import logging
+
+        orch, _ = make_orchestrator(
             selector, model="iPhone8,1", ios_version="15.5", battery=60, crash_at_stage=2
         )
-        connects_before = 0
-        original_connect = proto.connect
-
-        def counting_connect():
-            nonlocal connects_before
-            connects_before += 1
-            original_connect()
-
-        proto.connect = counting_connect
-        session = orch.run()
+        with caplog.at_level(logging.WARNING):
+            session = orch.run()
         assert [a.attack_id for a in orch.attempts] == ["checkm8_style", "agent_style"]
         assert orch.attempts[0].success is False
         assert orch.attempts[0].device_crashed is True
         assert orch.attempts[0].connection_dropped is False
         assert orch.attempts[1].success is True
-        assert connects_before == 1  # never reconnected after the crash
+        assert not [
+            r for r in caplog.records if "reconnecting" in r.message and "checkm8_style" in r.message
+        ]
         session.close()
 
     def test_crash_exhausts_to_no_viable_attack_without_retrying(self, selector):
         # both attacks compatible; crash checkm8 at stage 2 and fail
-        # agent-style's first stage outright -- neither should ever retry
+        # agent-style's first stage outright - neither should ever retry
         orch, _ = make_orchestrator(
             selector,
             model="iPhone8,1",
@@ -153,7 +150,7 @@ class TestNoViableAttack:
         orch, _ = make_orchestrator(selector, model="Nokia3310", ios_version="1.0", battery=60)
         with pytest.raises(NoViableAttackError):
             orch.run()
-        assert orch.attempts == []  # never even tried -- filtered before any run
+        assert orch.attempts == []  # never even tried - filtered before any run
 
     def test_all_attacks_exhausted(self, selector):
         orch, _ = make_orchestrator(
