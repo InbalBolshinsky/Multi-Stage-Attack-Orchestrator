@@ -12,10 +12,13 @@ device/protocol response, not from this number.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from .context import AttackContext
 from .errors import ConnectionDropped, DeviceCrashed
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -44,10 +47,15 @@ class Stage:
         catching them - the Attack/Orchestrator layer needs to see and
         handle each one distinctly (see README).
         """
+        logger.debug("stage %d (%s): starting", self.stage_id, self.name)
         try:
             success = context.protocol.run_stage(self.stage_id)
         except (ConnectionDropped, DeviceCrashed):
+            logger.debug("stage %d (%s): connection lost", self.stage_id, self.name)
             raise
+        logger.debug(
+            "stage %d (%s): %s", self.stage_id, self.name, "succeeded" if success else "failed"
+        )
         return StageResult(self.stage_id, self.name, success)
 
     def __repr__(self) -> str:

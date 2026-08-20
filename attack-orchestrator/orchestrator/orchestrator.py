@@ -52,15 +52,25 @@ class Orchestrator:
         """
         self.protocol.connect()
         device = self.protocol.hello()
+        logger.debug("connected; device reported as %r", device)
         queue = self.selector.build_queue(device)
         if not queue:
+            logger.info("no compatible attack for device %r; nothing to try", device)
             self.protocol.close()
             raise NoViableAttackError(f"no compatible attack for device {device!r}")
 
         for i, attack in enumerate(queue):
+            logger.info(
+                "trying attack %s (%d/%d in queue, estimated_success_probability=%.3f)",
+                attack.attack_id,
+                i + 1,
+                len(queue),
+                attack.estimated_success_probability,
+            )
             result, device = self._run_with_retries(attack, device)
             self.attempts.append(result)
             if result.success:
+                logger.info("attack %s succeeded; device unlocked", attack.attack_id)
                 context = AttackContext(protocol=self.protocol, device=device)
                 return Session(context)
             logger.info(
@@ -77,11 +87,18 @@ class Orchestrator:
                 # next candidate gets a turn, so its first stage doesn't
                 # inherit this dead socket and get misreported as its own
                 # connection drop.
+                logger.info(
+                    "connection left dead by %s (%s); reconnecting before next candidate",
+                    attack.attack_id,
+                    "crash" if result.device_crashed else "retries exhausted",
+                )
                 self.protocol.close()
                 self.protocol.connect()
                 device = self.protocol.hello()
+                logger.debug("reconnected; device reported as %r", device)
 
         self.protocol.close()
+        logger.info("all %d compatible attack(s) failed for device %r", len(queue), device)
         raise NoViableAttackError(
             f"all {len(queue)} compatible attack(s) failed for device {device!r}"
         )
@@ -111,6 +128,7 @@ class Orchestrator:
             self.protocol.close()
             self.protocol.connect()
             device = self.protocol.hello()
+            logger.debug("reconnected; device reported as %r", device)
             context = AttackContext(protocol=self.protocol, device=device)
             result = attack.run(context)
         return result, device

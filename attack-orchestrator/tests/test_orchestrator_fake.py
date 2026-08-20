@@ -158,7 +158,7 @@ class TestNoViableAttack:
             model="iPhone8,1",
             ios_version="15.5",  # both compatible
             battery=60,
-            fail_stages={1, 10},  # first stage of BOTH attacks fails
+            fail_stages={1, 10},  # first stage of both attacks fails
         )
         with pytest.raises(NoViableAttackError):
             orch.run()

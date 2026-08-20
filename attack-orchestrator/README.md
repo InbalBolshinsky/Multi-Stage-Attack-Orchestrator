@@ -1,14 +1,21 @@
 # Multi-Stage Attack Orchestrator
 
-A framework that, given a device, picks a compatible unlocking attack from
-a registry of candidates, runs it stage by stage, and extracts data once
-it succeeds. Part 1 (Python) is pure decision-making logic; Part 2 (C) is a
-TCP-based device simulator it talks to; Part 3 is tests, including tests
-that run the real Python client against the real compiled C simulator.
+A framework that, given a mobile device, picks a compatible unlocking attack
+from a registry of candidates, runs it stage by stage, and extracts data
+once it succeeds.
 
-See [`PROTOCOL.md`](PROTOCOL.md) for the wire protocol between the two.
+- **Part 1** (`orchestrator/`) — pure Python decision-making: which attack
+  to run, how to react when a stage fails, how to turn a successful chain
+  into extracted files. No real device involved.
+- **Part 2** (`simulator/`) — a device simulator written in C, spoken to
+  over TCP, that behaves enough like a real device to exercise Part 1
+  properly — including when things go wrong (a dropped connection, a
+  device crash).
+- **Part 3** (`tests/`) — tests for both, including integration tests that
+  run the real Python client against the real compiled C simulator, not
+  just in-memory fakes.
 
-## Running it
+## Quick start
 
 ```bash
 # Build the simulator
@@ -41,13 +48,14 @@ Orchestrator
   ├─ Attack (interface)   Composite of Stages; is_compatible(), run()
   │    ├─ Checkm8StyleAttack    (example: bootrom-level, old hardware, low battery floor)
   │    ├─ CheckrainStyleAttack  (example: full jailbreak on that same bootrom exploit, narrower device subset)
-  │    └─ AgentStyleAttack      (example: sideloaded agent, newer iOS, higher battery floor)
+  │    ├─ AgentStyleAttack      (example: sideloaded agent, newer iOS, higher battery floor, requires AFU)
+  │    └─ JailbreakSSHStyleAttack (example: rides an existing jailbreak over SSH, requires already-jailbroken)
   ├─ Stage (interface)    one step; declares an estimated success_probability
   ├─ Protocol (interface) Bridge: how communication actually happens
   │    ├─ FakeProtocol         in-memory, for Part 1 tests -- no network
-  │    └─ TCPProtocol          real socket, speaks PROTOCOL.md to the C simulator
+  │    └─ TCPProtocol          real socket, speaks the wire protocol below to the C simulator
   ├─ AttackContext         shared state (protocol, device, scratch dict) passed to every Stage
-  └─ Session               returned on success; read_file() / extract_all()
+  └─ Session               returned on success; read_file() / extract() / extract_all()
 ```
 
 ### Design patterns used, and why
@@ -81,11 +89,14 @@ extra `set_next()` wiring. Went with the simpler option.
 **Considered and rejected: decision tree** for attack selection. Early on
 this looked appealing ("pick an attack based on device state"), but
 compatibility per attack is a flat conjunction of independent checks (model
-in set? iOS in range? battery sufficient?) — there's no branching structure
-that differs attack-to-attack to justify a tree. Went with filter-then-rank
-instead (see below).
+in set? iOS in range? battery sufficient? AFU/BFU? jailbroken?) — there's
+no branching structure that differs attack-to-attack to justify a tree.
+Went with filter-then-rank instead (see below).
 
-## The four things the assignment explicitly asks you to think about
+## Design decisions
+
+The assignment calls out four things worth thinking about. Here's how each
+was resolved, and why, where more than one reasonable option existed.
 
 ### 1. Several attacks may be valid — how do you pick?
 
@@ -94,10 +105,10 @@ Two-phase: **filter** attacks down to ones compatible with the device
 `estimated_success_probability` (the product of each stage's declared
 probability — a chain only succeeds end-to-end if every stage does).
 
-The `AttackSelector` returns this ranking as an ordered queue rather than a
-single pick, because that queue is what makes the fallback behavior in §3
-possible: if the top candidate fails, the orchestrator doesn't give up, it
-tries the next one down the list.
+`AttackSelector.build_queue()` returns this ranking as an ordered queue
+rather than a single pick, because that queue is what makes the fallback
+behavior in §3 possible: if the top candidate fails, the orchestrator
+doesn't give up, it tries the next one down the list.
 
 Ties are broken by fewer stages first — a shorter chain has fewer places to
 fail and costs less time to attempt, which seemed like a reasonable
@@ -110,9 +121,10 @@ example attacks' realistic numbers to coincide.
 
 ### 2. What should an attack check before it runs?
 
-`DeviceState` carries `model`, `ios_version`, `battery`, and `locked`.
-These weren't picked arbitrarily — they're grounded in how real mobile
-forensic tooling actually gates low-level extraction attempts:
+`DeviceState` carries `model`, `ios_version`, `battery`, `locked`,
+`after_first_unlock`, and `jailbroken`. These weren't picked arbitrarily —
+they're grounded in how real mobile forensic tooling actually gates
+low-level extraction attempts:
 
 - **model / chipset generation** — exploits target specific hardware
   generations, not just "an iPhone"
@@ -124,6 +136,14 @@ forensic tooling actually gates low-level extraction attempts:
   low-level attack attempt can't even be started; different attack styles
   have different floors (a bootrom-level exploit needs far less charge than
   one requiring the device to stay powered through a sideload + reboot)
+- **AFU / BFU** (`after_first_unlock`) — whether the passcode has been
+  entered since last boot. Independent of `locked`: a device can be AFU but
+  currently re-locked at the lock screen. Some attacks require one state
+  specifically (`AgentStyleAttack` requires AFU, since sideloading needs
+  pairing/keychain state that only exists post-unlock)
+- **jailbroken** — whether the device already has a working jailbreak from
+  a prior run. `JailbreakSSHStyleAttack` requires this and skips exploiting
+  entirely, riding the existing jailbreak over SSH instead
 
 `locked` is tracked but isn't a compatibility gate — an attack's whole job
 is to get from locked to unlocked, so it wouldn't make sense to require
@@ -197,17 +217,116 @@ Two decisions worth calling out:
   not just full auto-discovery — so extraction still works against a
   device/profile that can only do single-file reads against a known
   manifest, without requiring `LIST` to exist.
-- **Extraction is per-file best-effort, not all-or-nothing.** One missing
-  or unreadable file doesn't discard everything else that succeeded —
-  `ExtractionResult` separately tracks `.files` (succeeded) and `.errors`
-  (failed, with a reason), so a caller gets everything that was actually
-  recoverable rather than nothing at all because of one bad path.
+- **Extraction is per-file best-effort, not all-or-nothing.** A missing or
+  unreadable file (`ERR NOTFOUND`, `ERR LOCKED`) is recorded in
+  `ExtractionResult.errors` and extraction keeps going, so a caller gets
+  everything actually recoverable rather than nothing because of one bad
+  path. A connection drop or device crash mid-extraction is different — the
+  channel itself is gone, so the loop stops immediately and that's recorded
+  once in `ExtractionResult.aborted` instead of as another per-file error.
+
+## Part 2: device simulator & wire protocol
+
+The simulator (`simulator/simulator.c`) stands in for a real device over
+TCP: it reports device info, "runs" attack stages with configurable
+success/failure, and once "unlocked" serves reads from a small in-memory
+fake filesystem. It also simulates the two ways a real device attempt can
+go wrong beyond a plain stage failure — a silent connection drop and a
+device crash — since a device simulator that can only succeed or return
+`FAIL` wouldn't exercise §3 above at all. The protocol itself was ours to
+design.
+
+**Framing.** Every message, either direction, is one frame:
+`[4 bytes: payload length, big-endian uint32][N bytes: payload]`. Big-endian
+because that's network byte order — the standard every real protocol
+uses, and it removes any ambiguity between C and Python defaulting to
+different native byte order (`htonl()`/`ntohl()` vs.
+`int.to_bytes(4, "big")`). The receiver always knows exactly how many
+payload bytes follow, so framing never depends on scanning for a delimiter
+— which matters because `READ`'s reply embeds raw file bytes that can
+contain any byte value, including `\n`. (An earlier version of this
+protocol was line-based, terminating each message with `\n`; that made a
+`\n` inside file content ambiguous with the end of the message.
+Length-prefixing was a deliberate fix for that hole.) A zero-length frame,
+an oversized declared length, or a connection that dies mid-frame are all
+treated as protocol errors — no real message is ever empty.
+
+Payload *content* is still plain text for every command and most
+responses — only the framing changed. `READ`'s reply is the one place a
+payload has structure: a text header, one embedded `\n`, then the raw file
+bytes filling out the rest of the frame. The receiver splits on the
+*first* `\n` only and takes everything after it by length, so an embedded
+`\n` inside the file content is not a problem.
+
+**Commands (client → server):**
+
+| Command | Purpose |
+|---|---|
+| `HELLO` | Ask for device info |
+| `STAGE <id>` | Execute one attack stage by numeric id |
+| `UNLOCK` | Mark the device unlocked (sent after all stages in a chain succeed) |
+| `READ <path>` | Read one file (only valid once unlocked) |
+| `LIST` | Enumerate extractable file paths (only valid once unlocked) |
+| `QUIT` | Close the session cleanly |
+
+**Responses (server → client):**
+
+| Response | Meaning |
+|---|---|
+| `OK HELLO model=<m> ios=<v> battery=<0-100> locked=<0\|1> afu=<0\|1> jailbroken=<0\|1>` | device info |
+| `OK STAGE <id> SUCCESS` / `OK STAGE <id> FAIL` | stage outcome |
+| `ERR CRASH <id>` | the device reports that stage crashed it, then the connection closes |
+| `OK UNLOCK locked=0` | unlock acknowledged |
+| `OK READ <path> <len>\n<raw bytes>` | file content, one frame |
+| `OK LIST <n>\n<path 1>\n...\n<path n>` | file listing, one frame |
+| `OK BYE` | ack for `QUIT` |
+| `ERR LOCKED` | `READ`/`LIST` requested before any attack unlocked the device |
+| `ERR NOTFOUND <path>` | requested path doesn't exist |
+| `ERR UNKNOWN <command>` | unrecognized command |
+
+Notes:
+
+- `afu` is 1 if the passcode has been entered since the device's last boot,
+  independent of `locked` (see §2 above). `jailbroken` is 1 if the device
+  already has a working jailbreak, independent of both.
+- A **dropped connection is silent** — no `ERR` reply, the socket just
+  closes at a frame boundary. This deliberately mirrors a real device
+  failure (cable pull, bootloader hang) rather than a clean protocol-level
+  error, so the client can tell "the device told me no" (`ERR`/`FAIL`)
+  apart from "the device just vanished" (closed socket) — see §3 for why
+  that distinction drives different retry behavior.
+- `ERR CRASH <id>` is a *third* failure mode: the device gets a chance to
+  report that this stage broke it, and only *then* does the connection
+  close. The client's read of this reply succeeding is the actual signal
+  that tells a crash apart from a silent drop, where the read itself fails.
+- `<byte-length>` in the `READ` header is redundant with the frame's own
+  length prefix — kept for readability/logging, not needed to parse the
+  frame correctly.
+
+**Simulator configuration** is via CLI flags at startup, not over the wire
+— "what should this fake device do" is a test-setup concern, not something
+a real device would expose to an attacker:
+
+```bash
+./simulator --port 9000 --model iPhone8,1 --ios 14.4 --battery 60 \
+    --fail-stage 2 --fail-stage 5 --drop-stage 7 --crash-stage 3 --bfu --jailbroken
+```
+
+| Flag | Effect |
+|---|---|
+| `--port <n>` | listen port (default 9000) |
+| `--model / --ios / --battery` | what `HELLO` reports |
+| `--fail-stage <id>` (repeatable) | that stage always returns `FAIL` |
+| `--drop-stage <id>` | connection is silently closed when that stage is requested |
+| `--crash-stage <id>` | that stage replies `ERR CRASH <id>`, then the connection closes |
+| `--bfu` | report `afu=0` (default is AFU, the more common case) |
+| `--jailbroken` | report `jailbroken=1` (default is stock) |
 
 ## Testing strategy
 
 - **Unit tests** (`test_attack.py`, `test_selector.py`,
-  `test_orchestrator_fake.py`, `test_session.py`) run against
-  `FakeProtocol` — a real Python object implementing the `Protocol`
+  `test_orchestrator_fake.py`, `test_session.py`, `test_protocol.py`) run
+  against `FakeProtocol` — a real Python object implementing the `Protocol`
   interface entirely in memory, not a mock library. This lets failure
   scenarios (a specific stage failing, a connection dropping at a specific
   point) be scripted precisely and deterministically, including scenarios
@@ -216,38 +335,58 @@ Two decisions worth calling out:
 - **Integration tests** (`test_integration_tcp.py`) spin up the actual
   compiled `simulator` binary as a subprocess on a free port and drive the
   real `TCPProtocol` against it over an actual socket — proving Part 1 and
-  Part 2 genuinely interoperate, per the protocol in `PROTOCOL.md`, not
-  just that each satisfies its own interface in isolation. This is also
-  what caught a real bug during development: `Orchestrator.run()`
-  originally closed the connection on every exit path including success,
-  handing back a `Session` wired to a dead socket — invisible to any
-  mock-based test, immediately visible once a real successful run tried to
-  actually read a file afterward. It also caught a second one the same
-  way: falling through to a fallback attack after a persistent
-  `--drop-stage` reused the previous attack's now-dead socket, so the
-  fallback attack's first stage misreported a connection drop against
-  itself — with a tight retry budget, that phantom drop could exhaust the
-  fallback attack's retries and fail the whole run even though the
-  fallback attack was fully viable. Fixed by reconnecting before handing
-  the next candidate its turn (see the README's failure-handling section
-  above); `test_next_attack_gets_a_fresh_connection_after_retries_exhausted`
-  in `test_integration_tcp.py` is the regression test.
+  Part 2 genuinely interoperate, not just that each satisfies its own
+  interface in isolation. This is also what caught a real bug during
+  development: `Orchestrator.run()` originally closed the connection on
+  every exit path including success, handing back a `Session` wired to a
+  dead socket — invisible to any mock-based test, immediately visible once
+  a real successful run tried to actually read a file afterward. It also
+  caught a second one the same way: falling through to a fallback attack
+  after a persistent `--drop-stage` reused the previous attack's now-dead
+  socket, so the fallback attack's first stage misreported a connection
+  drop against itself — with a tight retry budget, that phantom drop could
+  exhaust the fallback attack's retries and fail the whole run even though
+  the fallback attack was fully viable. Fixed by reconnecting before
+  handing the next candidate its turn (see §3 above);
+  `test_next_attack_gets_a_fresh_connection_after_retries_exhausted` is the
+  regression test.
 
-Scenarios covered: clean success; stage-failure fallback to a second
-compatible attack; exhaustion when no attack is compatible; exhaustion when
-every compatible attack fails; a persistent connection drop correctly
-bounded by retry count (both against `FakeProtocol`, scripted precisely,
-and against the real simulator's `--drop-stage`); a device crash falling
-straight through to the next attack with **zero** reconnect attempts,
-proving it gets the stage-logic-failure policy rather than the drop's
-retry policy (again both against `FakeProtocol` and the real simulator's
-`--crash-stage`); a simulator-level sanity check that `READ` is refused
-before any attack unlocks the device; and, in `test_selector.py`, the
-three-attack case where two bootrom-based attacks (`checkm8_style`,
-`checkrain_style`) are simultaneously compatible on shared hardware and get
-ranked by estimated probability, plus an isolated check (via two minimal
-synthetic attacks, not the real examples) that a probability tie is broken
-by fewer stages.
+Scenarios covered, roughly by file:
+
+- **`test_attack.py`** — per-attack compatibility (model/iOS/battery/AFU-BFU/
+  jailbroken bounds for each of the four example attacks), `IOSVersion`
+  numeric ordering, and `estimated_success_probability` as the product of
+  stage probabilities.
+- **`test_selector.py`** — filtering out incompatible attacks; the
+  three-attack case where two bootrom-based attacks (`checkm8_style`,
+  `checkrain_style`) are simultaneously compatible on shared hardware and
+  get ranked by estimated probability; `jailbreak_ssh_style` joining and
+  ranking first once the device reports jailbroken; an empty queue when
+  nothing is compatible; and an isolated check (via two minimal synthetic
+  attacks, not the real examples) that a probability tie is broken by fewer
+  stages.
+- **`test_orchestrator_fake.py`** — clean success returning a working
+  session; stage-failure fallback to the next compatible attack with no
+  retry of the failed stage; a persistent connection drop reconnecting and
+  retrying up to `max_connection_retries` before giving up; a device crash
+  falling straight through to the next attack with **zero** reconnect
+  attempts (proving it gets the stage-logic-failure policy, not the drop's
+  retry policy); and exhaustion — both when no attack is compatible at all
+  and when every compatible attack fails.
+- **`test_protocol.py`** — wire-level edge cases in `TCPProtocol`'s parsing:
+  `READ` length-mismatch detection, `HELLO` field validation and its
+  backward-compatible defaults for `afu`/`jailbroken`, and malformed `LIST`
+  counts.
+- **`test_session.py`** — reading a file once unlocked vs. a locked refusal;
+  `extract_all()` pulling every discoverable file; a per-file failure not
+  discarding already-successful extractions; and a connection drop or
+  device crash mid-extraction aborting the loop and being recorded in
+  `.aborted` rather than as a per-file error.
+- **`test_integration_tcp.py`** — the same fallback/drop/crash scenarios
+  above, but driven over a real socket against the real compiled
+  simulator (via `--fail-stage`/`--drop-stage`/`--crash-stage`), plus a
+  simulator-level sanity check that `READ` is refused before any attack
+  unlocks the device.
 
 ## What's deliberately out of scope
 
@@ -256,9 +395,9 @@ by fewer stages.
   appropriate for the scope here but is the natural next step for a
   production version.
 - A binary encoding for command/response *payloads* — framing is now
-  length-prefixed (see `PROTOCOL.md`), which is what actually made
-  arbitrary binary content in `READ` safe, but each payload's contents are
-  still a plain text string (`"STAGE 2"`, `"OK HELLO ..."`, etc.) rather
-  than a structured binary format. That keeps the protocol inspectable in
-  a log/packet-capture without inventing a binary encoding for every
-  command's arguments — a deliberate scope line, not an oversight.
+  length-prefixed, which is what actually made arbitrary binary content in
+  `READ` safe, but each payload's contents are still a plain text string
+  (`"STAGE 2"`, `"OK HELLO ..."`, etc.) rather than a structured binary
+  format. That keeps the protocol inspectable in a log/packet-capture
+  without inventing a binary encoding for every command's arguments — a
+  deliberate scope line, not an oversight.

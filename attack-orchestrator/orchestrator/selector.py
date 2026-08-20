@@ -10,8 +10,12 @@ next (see orchestrator.py).
 
 from __future__ import annotations
 
+import logging
+
 from .attack import Attack
 from .device import DeviceState
+
+logger = logging.getLogger(__name__)
 
 
 class AttackSelector:
@@ -27,4 +31,13 @@ class AttackSelector:
         """
         compatible = [a for a in self._attacks if a.is_compatible(device)]
         compatible.sort(key=lambda a: (-a.estimated_success_probability, len(a.stages)))
+        logger.info(
+            "%d/%d attack(s) compatible with device %s (ios=%s): %s",
+            len(compatible),
+            len(self._attacks),
+            device.model,
+            device.ios_version,
+            ", ".join(f"{a.attack_id} (p={a.estimated_success_probability:.3f})" for a in compatible)
+            or "none",
+        )
         return compatible
