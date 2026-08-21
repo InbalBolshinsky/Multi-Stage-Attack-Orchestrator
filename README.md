@@ -25,9 +25,8 @@ from orchestrator.attacks import all_attacks
 
 proto = TCPProtocol('127.0.0.1', 9000)
 orch = Orchestrator(proto, AttackSelector(all_attacks()))
-session = orch.run()
-print(session.extract_all().succeeded)
-session.close()
+with orch.run() as session:
+    print(session.extract_all().succeeded)
 "
 ```
 
@@ -60,7 +59,7 @@ Orchestrator
 
 **Strategy:** `Attack` and `Stage` are both interchangeable implementations of a shared interface. The orchestrator, selector, and runner never need to know which concrete attack/stage they're holding. This is the backbone almost everything else hangs off.
 
-**Composite:** an `Attack` is structurally "made of" an ordered list of `Stage`s, and exposes a single `run()` over the whole chain - the same shape a lone stage has from the caller's side.
+**Composite:** an `Attack` acts as an execution pipeline that composes an ordered list of `Stage` objects. It exposes a single `run()` to the `Orchestrator`, which loops through the stages internally and stops at the first failure - the `Orchestrator` only ever calls `Attack.run()` and never touches an individual `Stage`. `Attack` and `Stage` aren't tied together by a shared interface or base class; they just both happen to expose `run(context)`, so a lone stage has the same shape as a full chain from the caller's side.
 
 **Bridge:** `Protocol` decouples "what an attack/stage needs to do" (connect, run a stage, read a file) from "how that actually happens on the wire" (in-memory fake vs. real TCP to the C simulator). Stages depend only on the `Protocol` interface via `AttackContext`, never on a concrete implementation - this is what makes Part 1 fully testable without Part 2 existing, and lets the exact same `Attack`/`Stage` code run against either implementation unchanged.
 
