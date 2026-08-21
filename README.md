@@ -145,18 +145,20 @@ Payload *content* is still plain text for every command and most responses - onl
 
 **Responses (server → client):**
 
-| Response                                                      | Meaning                                                              |
-| ------------------------------------------------------------- | -------------------------------------------------------------------- |
-| `OK HELLO model=<model> ios=<version> battery=<0-100> locked=<0|1> afu=<0|1> jailbroken=<0|1>`                                                            |
-| `OK STAGE <id> SUCCESS` / `OK STAGE <id> FAIL`            | stage outcome                                                        |
-| `ERR CRASH <id>`                                            | the device reports that stage crashed it, then the connection closes |
-| `OK UNLOCK locked=0`                                        | unlock acknowledged                                                  |
-| `OK READ <path> <len>\n<raw bytes>`                         | file content, one frame                                              |
-| `OK LIST <n>\n<path 1>\n...\n<path n>`                      | file listing, one frame                                              |
-| `OK BYE`                                                    | ack for `QUIT`                                                      |
-| `ERR LOCKED`                                                | `READ`/`LIST` requested before any attack unlocked the device    |
-| `ERR NOTFOUND <path>`                                       | requested path doesn't exist                                         |
-| `ERR UNKNOWN <command>`                                     | unrecognized command                                                 |
+**Responses (server → client):**
+
+| Response | Meaning |
+| --- | --- |
+| `OK HELLO model=<model> ios=<version> battery=<0-100> locked=<0|1> afu=<0|1> jailbroken=<0|1>` | device info reply |
+| `OK STAGE <id> SUCCESS` / `OK STAGE <id> FAIL` | stage outcome |
+| `ERR CRASH <id>` | the device reports that stage crashed it, then the connection closes |
+| `OK UNLOCK locked=0` | unlock acknowledged |
+| `OK READ <path> <len>\n<raw bytes>` | file content, one frame |
+| `OK LIST <n>\n<path 1>\n...\n<path n>` | file listing, one frame |
+| `OK BYE` | ack for `QUIT` |
+| `ERR LOCKED` | `READ`/`LIST` requested before any attack unlocked the device |
+| `ERR NOTFOUND <path>` | requested path doesn't exist |
+| `ERR UNKNOWN <command>` | unrecognized command |
 
 Notes:
 
