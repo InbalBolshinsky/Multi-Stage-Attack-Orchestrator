@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+.venv/
 *.egg-info/
 simulator/simulator
 simulator/*.dSYM/
