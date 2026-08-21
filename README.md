@@ -29,7 +29,6 @@ session = orch.run()
 print(session.extract_all().succeeded)
 session.close()
 "
-
 ```
 
 ## Architecture
@@ -69,7 +68,7 @@ Orchestrator
 
 **Considered and rejected: decision tree** for attack selection. Early on this looked appealing ("pick an attack based on device state"), but compatibility per attack is a flat conjunction of independent checks (model in set? iOS in range? battery sufficient? AFU/BFU? jailbroken?) - there's no branching structure that differs attack-to-attack to justify a tree. So I went with filter-then-rank instead (see below).
 
-<img width="2060" height="1892" alt="Blank diagram" src="https://github.com/user-attachments/assets/010e704e-ee99-492c-a0be-2c02d20795ef" />
+<img width="2060" height="1892" alt="Orchestrator Architecture Diagram" src="https://github.com/user-attachments/assets/010e704e-ee99-492c-a0be-2c02d20795ef" />
 
 ## Design decisions
 
@@ -148,13 +147,13 @@ Payload *content* is still plain text for every command and most responses - onl
 
 | Response                                                      | Meaning                                                              |
 | ------------------------------------------------------------- | -------------------------------------------------------------------- |
-| `OK HELLO model=<m></m> ios=<v></v> battery=<0-100> locked=<0 | 1> afu=<0                                                            |
+| `OK HELLO model=<model> ios=<version> battery=<0-100> locked=<0|1> afu=<0|1> jailbroken=<0|1>`                                                            |
 | `OK STAGE <id> SUCCESS` / `OK STAGE <id> FAIL`            | stage outcome                                                        |
 | `ERR CRASH <id>`                                            | the device reports that stage crashed it, then the connection closes |
 | `OK UNLOCK locked=0`                                        | unlock acknowledged                                                  |
 | `OK READ <path> <len>\n<raw bytes>`                         | file content, one frame                                              |
 | `OK LIST <n>\n<path 1>\n...\n<path n>`                      | file listing, one frame                                              |
-| `OK BYE`                                                    | ack for`QUIT`                                                      |
+| `OK BYE`                                                    | ack for `QUIT`                                                      |
 | `ERR LOCKED`                                                | `READ`/`LIST` requested before any attack unlocked the device    |
 | `ERR NOTFOUND <path>`                                       | requested path doesn't exist                                         |
 | `ERR UNKNOWN <command>`                                     | unrecognized command                                                 |
