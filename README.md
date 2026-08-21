@@ -196,33 +196,33 @@ Notes:
 Scenarios covered, roughly by file:
 
 * **`test_attack.py`**:
-* Per-attack compatibility bounds (model/iOS/battery/AFU-BFU/jailbroken) for each of the four example attacks
-* `IOSVersion` numeric ordering
-* `estimated_success_probability` as the product of stage probabilities
+  Per-attack compatibility bounds (model/iOS/battery/AFU-BFU/jailbroken) for each of the four example attacks
+  `IOSVersion` numeric ordering
+  `estimated_success_probability` as the product of stage probabilities
 * **`test_selector.py`**:
-* Filtering out incompatible attacks
-* The three-attack case where two bootrom-based attacks (`checkm8_style`, `checkrain_style`) are simultaneously compatible on shared hardware and get ranked by estimated probability
-* `jailbreak_ssh_style` joining and ranking first once the device reports jailbroken
-* An empty queue when nothing is compatible
-* An isolated check (via two minimal synthetic attacks, not the real examples) that a probability tie is broken by fewer stages
+  Filtering out incompatible attacks
+  The three-attack case where two bootrom-based attacks (`checkm8_style`, `checkrain_style`) are simultaneously compatible on shared hardware and get ranked by estimated probability
+  `jailbreak_ssh_style` joining and ranking first once the device reports jailbroken
+  An empty queue when nothing is compatible
+  An isolated check (via two minimal synthetic attacks, not the real examples) that a probability tie is broken by fewer stages
 * **`test_orchestrator_fake.py`**:
-* Clean success returning a working session
-* Stage-failure fallback to the next compatible attack with no retry of the failed stage
-* A persistent connection drop reconnecting and retrying up to `max_connection_retries` before giving up
-* A device crash falling straight through to the next attack with **zero** reconnect attempts (proving it gets the stage-logic-failure policy, not the drop's retry policy)
-* Exhaustion, both when no attack is compatible at all and when every compatible attack fails
+  Clean success returning a working session
+  Stage-failure fallback to the next compatible attack with no retry of the failed stage
+  A persistent connection drop reconnecting and retrying up to `max_connection_retries` before giving up
+  A device crash falling straight through to the next attack with **zero** reconnect attempts (proving it gets the stage-logic-failure policy, not the drop's retry policy)
+  Exhaustion, both when no attack is compatible at all and when every compatible attack fails
 * **`test_protocol.py`**:
-* `READ` length-mismatch detection
-* `HELLO` field validation and its backward-compatible defaults for `afu`/`jailbroken`
-* Malformed `LIST` counts
+  `READ` length-mismatch detection
+  `HELLO` field validation and its backward-compatible defaults for `afu`/`jailbroken`
+  Malformed `LIST` counts
 * **`test_session.py`**:
-* Reading a file once unlocked vs. a locked refusal
-* `extract_all()` pulling every discoverable file
-* A per-file failure not discarding already-successful extractions
-* A connection drop or device crash mid-extraction aborting the loop and being recorded in `.aborted` rather than as a per-file error
+  Reading a file once unlocked vs. a locked refusal
+  `extract_all()` pulling every discoverable file
+  A per-file failure not discarding already-successful extractions
+  A connection drop or device crash mid-extraction aborting the loop and being recorded in `.aborted` rather than as a per-file error
 * **`test_integration_tcp.py`**:
-* The same fallback/drop/crash scenarios above, driven over a real socket against the real compiled simulator (via `--fail-stage`/`--drop-stage`/`--crash-stage`)
-* A simulator-level sanity check that `READ` is refused before any attack unlocks the device
+  The same fallback/drop/crash scenarios above, driven over a real socket against the real compiled simulator (via `--fail-stage`/`--drop-stage`/`--crash-stage`)
+  A simulator-level sanity check that `READ` is refused before any attack unlocks the device
 
 ## What's deliberately out of scope
 
