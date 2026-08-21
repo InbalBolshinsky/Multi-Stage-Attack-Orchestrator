@@ -149,7 +149,7 @@ Payload *content* is still plain text for every command and most responses - onl
 
 | Response | Meaning |
 | --- | --- |
-| `OK HELLO model=<model> ios=<version> battery=<0-100> locked=<0|1> afu=<0|1> jailbroken=<0|1>` | device info reply |
+| `OK HELLO model=<model> ios=<version> battery=<0-100> locked=<0\|1> afu=<0\|1> jailbroken=<0\|1>` | device info reply |
 | `OK STAGE <id> SUCCESS` / `OK STAGE <id> FAIL` | stage outcome |
 | `ERR CRASH <id>` | the device reports that stage crashed it, then the connection closes |
 | `OK UNLOCK locked=0` | unlock acknowledged |
@@ -178,12 +178,12 @@ Notes:
 | Flag                               | Effect                                                           |
 | ---------------------------------- | ---------------------------------------------------------------- |
 | `--port <n>`                     | listen port (default 9000)                                       |
-| `--model / --ios / --battery`    | what`HELLO` reports                                            |
-| `--fail-stage <id>` (repeatable) | that stage always returns`FAIL`                                |
+| `--model / --ios / --battery`    | what `HELLO` reports                                            |
+| `--fail-stage <id>` (repeatable) | that stage always returns `FAIL`                                |
 | `--drop-stage <id>`              | connection is silently closed when that stage is requested       |
-| `--crash-stage <id>`             | that stage replies`ERR CRASH <id>`, then the connection closes |
-| `--bfu`                          | report`afu=0` (default is AFU, the more common case)           |
-| `--jailbroken`                   | report`jailbroken=1` (default is stock)                        |
+| `--crash-stage <id>`             | that stage replies `ERR CRASH <id>`, then the connection closes |
+| `--bfu`                          | report `afu=0` (default is AFU, the more common case)           |
+| `--jailbroken`                   | report `jailbroken=1` (default is stock)                        |
 
 ## Testing strategy
 
