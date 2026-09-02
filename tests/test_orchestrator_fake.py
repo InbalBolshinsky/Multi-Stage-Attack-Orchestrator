@@ -98,6 +98,46 @@ class TestConnectionDropHandling:
         assert orch.attempts[0].connection_dropped is True
 
 
+class TestConnectionDropDuringUnlock:
+    def test_drop_on_unlock_is_reconnected_and_retried_like_any_other_drop(self, selector):
+        """
+        Every stage passes, then the socket dies on the UNLOCK step. That's
+        a transient drop, not a logic failure or a crash - the orchestrator
+        must reconnect and retry the attack, not let an exception escape
+        run(). The drop clears on reconnect so the retry succeeds.
+        """
+        proto = FakeProtocol(
+            model="iPhone8,1", ios_version="14.4", battery=60,
+            files=dict(FILES), drop_on_unlock=True,
+        )
+        original_connect = proto.connect
+        state = {"connects": 0}
+
+        def connect_then_clear_unlock_drop_after_first():
+            original_connect()
+            state["connects"] += 1
+            if state["connects"] >= 2:
+                proto.drop_on_unlock = False
+
+        proto.connect = connect_then_clear_unlock_drop_after_first
+        orch = Orchestrator(proto, selector, max_connection_retries=2)
+        session = orch.run()
+        assert session.extract_all().succeeded
+        assert state["connects"] == 2  # exactly one retry
+        assert len(orch.attempts) == 1
+        assert orch.attempts[0].success is True
+
+    def test_persistent_drop_on_unlock_exhausts_retries_without_raising(self, selector):
+        orch, _ = make_orchestrator(
+            selector, model="iPhone8,1", ios_version="14.4", battery=60, drop_on_unlock=True
+        )
+        orch.max_connection_retries = 2
+        with pytest.raises(NoViableAttackError):
+            orch.run()
+        assert orch.attempts[0].connection_dropped is True
+        assert orch.attempts[0].device_crashed is False
+
+
 class TestDeviceCrashHandling:
     def test_crash_falls_back_with_zero_reconnect_attempts(self, selector, caplog):
         """

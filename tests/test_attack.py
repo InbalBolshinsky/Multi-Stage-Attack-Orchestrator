@@ -1,5 +1,6 @@
 import pytest
 
+from orchestrator import AttackContext, FakeProtocol
 from orchestrator.attacks import (
     Checkm8StyleAttack,
     CheckrainStyleAttack,
@@ -133,6 +134,33 @@ class TestEstimatedSuccessProbability:
     def test_lower_than_any_individual_stage(self):
         attack = AgentStyleAttack()
         assert attack.estimated_success_probability < min(s.success_probability for s in attack.stages)
+
+
+class TestUnlockFailureHandling:
+    """
+    The chain's closing UNLOCK can fail on the wire just like a stage. It
+    must come back as a flagged AttackResult, not an exception out of run().
+    """
+
+    def _context_for(self, **fake_kwargs) -> AttackContext:
+        proto = FakeProtocol(model="iPhone8,1", ios_version="14.4", battery=15, **fake_kwargs)
+        proto.connect()
+        return AttackContext(protocol=proto, device=proto.hello())
+
+    def test_connection_drop_during_unlock_is_a_flagged_result_not_a_raise(self):
+        result = Checkm8StyleAttack().run(self._context_for(drop_on_unlock=True))
+        assert result.success is False
+        assert result.connection_dropped is True
+        assert result.device_crashed is False
+        # every stage passed - the failure is the unlock, not a stage
+        assert all(s.success for s in result.stage_results)
+        assert result.failed_stage is None
+
+    def test_device_crash_during_unlock_is_a_flagged_result(self):
+        result = Checkm8StyleAttack().run(self._context_for(crash_on_unlock=True))
+        assert result.success is False
+        assert result.device_crashed is True
+        assert result.connection_dropped is False
 
 
 class TestIOSVersionComparison:

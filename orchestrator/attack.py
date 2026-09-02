@@ -98,37 +98,46 @@ class Attack:
         - connection dropped -> transient, may retry the same attack.
         - device crashed -> treated like a failure, but flagged separately
           so logs and tests can tell it apart from an ordinary failure.
+
+        The closing UNLOCK gets the same drop/crash handling as a stage: a
+        connection that dies right at unlock (every stage having passed) is
+        a retryable drop, not an exception that escapes run().
         """
         results: list[StageResult] = []
-        for stage in self.stages:
-            try:
+        # Tracks what a drop/crash would be blamed on: the stage in flight,
+        # or None once we're past the stages and into the closing UNLOCK.
+        in_flight: Stage | None = None
+        try:
+            for stage in self.stages:
+                in_flight = stage
                 result = stage.run(context)
-            except ConnectionDropped:
-                return AttackResult(
-                    attack_id=self.attack_id,
-                    success=False,
-                    stage_results=results,
-                    failed_stage=stage,
-                    connection_dropped=True,
-                )
-            except DeviceCrashed:
-                return AttackResult(
-                    attack_id=self.attack_id,
-                    success=False,
-                    stage_results=results,
-                    failed_stage=stage,
-                    device_crashed=True,
-                )
-            results.append(result)
-            if not result.success:
-                return AttackResult(
-                    attack_id=self.attack_id,
-                    success=False,
-                    stage_results=results,
-                    failed_stage=stage,
-                )
-        context.protocol.unlock()
+                results.append(result)
+                if not result.success:
+                    return self._failed(results, failed_stage=stage)
+            in_flight = None
+            context.protocol.unlock()
+        except ConnectionDropped:
+            return self._failed(results, failed_stage=in_flight, connection_dropped=True)
+        except DeviceCrashed:
+            return self._failed(results, failed_stage=in_flight, device_crashed=True)
         return AttackResult(attack_id=self.attack_id, success=True, stage_results=results)
+
+    def _failed(
+        self,
+        results: list[StageResult],
+        *,
+        failed_stage: Stage | None = None,
+        connection_dropped: bool = False,
+        device_crashed: bool = False,
+    ) -> AttackResult:
+        return AttackResult(
+            attack_id=self.attack_id,
+            success=False,
+            stage_results=results,
+            failed_stage=failed_stage,
+            connection_dropped=connection_dropped,
+            device_crashed=device_crashed,
+        )
 
     def __repr__(self) -> str:
         return f"<Attack {self.attack_id} stages={[s.stage_id for s in self.stages]}>"

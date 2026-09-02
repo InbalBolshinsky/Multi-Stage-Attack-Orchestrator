@@ -88,6 +88,8 @@ class FakeProtocol(Protocol):
     drop_on_read: str | None = None  # path that raises ConnectionDropped when read
     crash_on_read: str | None = None  # path that raises DeviceCrashed when read
     drop_on_list: bool = False  # raise ConnectionDropped from list_files()
+    drop_on_unlock: bool = False  # raise ConnectionDropped from unlock()
+    crash_on_unlock: bool = False  # raise DeviceCrashed from unlock()
     files: dict[str, bytes] = field(default_factory=dict)
     success_probabilities: dict[int, float] = field(default_factory=dict)
     rng: random.Random = field(default_factory=random.Random)
@@ -127,6 +129,11 @@ class FakeProtocol(Protocol):
         return True
 
     def unlock(self) -> None:
+        if self.crash_on_unlock:
+            raise DeviceCrashed("device crashed during unlock")
+        if self.drop_on_unlock:
+            self._connected = False
+            raise ConnectionDropped("connection dropped during unlock")
         self._locked = False
 
     def read_file(self, path: str) -> bytes:
